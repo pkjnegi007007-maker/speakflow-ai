@@ -1,0 +1,69 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user progress, streaks, and settings.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "xp": { "type": "integer" },
+        "level": { "type": "integer" },
+        "streak": { "type": "integer" },
+        "lastActive": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "xp", "level", "streak"]
+    },
+    "Session": {
+      "title": "Practice Session",
+      "description": "Records of AI coaching sessions.",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "userId": { "type": "string" },
+        "scenario": { "type": "string" },
+        "duration": { "type": "integer" },
+        "transcript": { "type": "array", "items": { "type": "object" } },
+        "scores": {
+          "type": "object",
+          "properties": {
+            "overall": { "type": "number" },
+            "confidence": { "type": "number" },
+            "fluency": { "type": "number" },
+            "grammar": { "type": "number" }
+          }
+        },
+        "feedback": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sessionId", "userId", "scenario", "createdAt"]
+    },
+    "Challenge": {
+      "title": "Daily Challenge",
+      "description": "AI generated speaking challenges.",
+      "type": "object",
+      "properties": {
+        "challengeId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "xpReward": { "type": "integer" },
+        "date": { "type": "string", "format": "date" }
+      }
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and progress."
+    },
+    "sessions/{sessionId}": {
+      "schema": "Session",
+      "description": "Session logs and analysis."
+    },
+    "challenges/{challengeId}": {
+      "schema": "Challenge",
+      "description": "Global or user-specific challenges."
+    }
+  }
+}

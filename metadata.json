@@ -1,0 +1,11 @@
+{
+  "name": "SpeakFlow AI",
+  "description": "Improve your communication skills with a real-time AI voice coach. Practice job interviews, casual talk, and social confidence.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "voice_interface",
+    "ai_coaching"
+  ]
+}
