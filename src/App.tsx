@@ -198,7 +198,7 @@ export default function App() {
   useEffect(() => {
     if (view !== 'session') return;
 
-    const silenceDuration = 1800; // 1.8s silence
+    const silenceDuration = 1100; // 1.1s silence for snappier conversational response
     const checkSilence = setInterval(() => {
       if (
         isListeningRef.current && 
@@ -212,7 +212,7 @@ export default function App() {
           stopListening();
         }
       }
-    }, 500);
+    }, 150); // High frequency check (150ms) to ensure low latency turn-taking
 
     return () => clearInterval(checkSilence);
   }, [view, stopListening]);
