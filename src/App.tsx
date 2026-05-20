@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mic, MicOff, Settings, History, Trophy, Github, LogOut, User as UserIcon, Play, ChevronRight, BarChart2, Sparkles, ShieldCheck, Zap, HelpCircle, Code, Volume2, Calendar, MessageSquare, AlertCircle, X, Check, Pause } from 'lucide-react';
 import { useVoice } from './hooks/useVoice';
@@ -22,7 +22,17 @@ export default function App() {
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [lastActivity, setLastActivity] = useState<number>(Date.now());
+  
+  // Performance and silence detection references to prevent high-frequency re-renders
+  const lastActivityRef = useRef<number>(Date.now());
+  const transcriptRef = useRef<string>('');
+  const interimTranscriptRef = useRef<string>('');
+  const isAiProcessingRef = useRef<boolean>(false);
+  const isAiSpeakingRef = useRef<boolean>(false);
+  const isPausedRef = useRef<boolean>(false);
+  const isListeningRef = useRef<boolean>(false);
+  const viewRef = useRef<View>('landing');
+
   const [sessionTranscript, setSessionTranscript] = useState<{ role: string; content: string }[]>([]);
   const [feedback, setFeedback] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -154,33 +164,74 @@ export default function App() {
     }
   }, [interimTranscript, isAiProcessing, isAiSpeaking, cancelSpeech]);
 
-  // Activity tracker for silence detection
+  // Keep refs in sync passively without triggering component re-renders
+  useEffect(() => {
+    transcriptRef.current = transcript;
+    interimTranscriptRef.current = interimTranscript;
+  }, [transcript, interimTranscript]);
+
+  useEffect(() => {
+    isAiProcessingRef.current = isAiProcessing;
+    isAiSpeakingRef.current = isAiSpeaking;
+  }, [isAiProcessing, isAiSpeaking]);
+
+  useEffect(() => {
+    isPausedRef.current = isPaused;
+  }, [isPaused]);
+
+  useEffect(() => {
+    isListeningRef.current = isListening;
+  }, [isListening]);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  // Activity tracker for silence detection - passive update via Ref avoids high-frequency page re-renders!
   useEffect(() => {
     if (transcript || interimTranscript) {
-      setLastActivity(Date.now());
+      lastActivityRef.current = Date.now();
     }
   }, [transcript, interimTranscript]);
 
-  // Handle Automatic Turn-Taking (Silence Detection)
+  // Handle Automatic Turn-Taking (Silence Detection) using a single decoupled background interval
   useEffect(() => {
-    if (isListening && !isPaused && (transcript.trim() || interimTranscript.trim()) && view === 'session') {
-      const silenceDuration = 1800; // 1.8s silence
-      const checkSilence = setInterval(() => {
+    if (view !== 'session') return;
+
+    const silenceDuration = 1800; // 1.8s silence
+    const checkSilence = setInterval(() => {
+      if (
+        isListeningRef.current && 
+        !isPausedRef.current && 
+        !isAiProcessingRef.current && 
+        !isAiSpeakingRef.current &&
+        (transcriptRef.current.trim() || interimTranscriptRef.current.trim())
+      ) {
         const now = Date.now();
-        if (now - lastActivity > silenceDuration && !isAiProcessing && !isAiSpeaking) {
+        if (now - lastActivityRef.current > silenceDuration) {
           stopListening();
         }
-      }, 500);
-      return () => clearInterval(checkSilence);
-    }
-  }, [isListening, transcript, interimTranscript, view, lastActivity, isAiProcessing, isAiSpeaking, isPaused]);
+      }
+    }, 500);
+
+    return () => clearInterval(checkSilence);
+  }, [view, stopListening]);
 
   // Handle User Voice Turn-Taking (Auto-trigger AI response after user finishes)
+  // Depends ONLY on isListening changing state, and accesses decoupled refs to prevent high-frequency re-evaluations
   useEffect(() => {
-    if (!isListening && !isPaused && transcript.trim() && view === 'session' && !isAiProcessing) {
-      handleUserSpeechFinished(transcript.trim());
+    if (!isListening) {
+      const currentTranscript = transcriptRef.current;
+      if (
+        !isPausedRef.current && 
+        currentTranscript.trim() && 
+        viewRef.current === 'session' && 
+        !isAiProcessingRef.current
+      ) {
+        handleUserSpeechFinished(currentTranscript.trim());
+      }
     }
-  }, [isListening, transcript, view, isAiProcessing, isPaused]);
+  }, [isListening]);
 
   const handleUserSpeechFinished = async (content: string) => {
     if (isAiProcessing) return;
@@ -216,6 +267,7 @@ export default function App() {
   };
 
   const handlePauseSession = () => {
+    isPausedRef.current = true;
     setIsPaused(true);
     stopListening();
     cancelSpeech();
@@ -223,6 +275,7 @@ export default function App() {
   };
 
   const handleResumeSession = () => {
+    isPausedRef.current = false;
     setIsPaused(false);
     startListening();
   };
@@ -237,6 +290,7 @@ export default function App() {
 
     setSelectedScenario(scenario);
     setSessionTranscript([]);
+    isPausedRef.current = false;
     setIsPaused(false);
     setView('session');
     
