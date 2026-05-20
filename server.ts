@@ -2,9 +2,21 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
+import { GoogleGenAI, Type } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Initialize Gemini on the server side
+const geminiApiKey = process.env.GEMINI_API_KEY;
+const aiGen = new GoogleGenAI({
+  apiKey: geminiApiKey || "",
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    }
+  }
+});
 
 async function startServer() {
   const app = express();
@@ -15,6 +27,112 @@ async function startServer() {
   // API Health Check
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  // Server-Side Gemini API Proxy Endpoints
+  app.post("/api/gemini/chat", async (req, res) => {
+    const { scenario, messages } = req.body;
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: "GEMINI_API_KEY is missing on the server configuration. Please declare it in your environment variables."
+      });
+    }
+
+    try {
+      const contents = messages.map((m: any) => ({
+        role: m.role === "ai" ? "model" : "user",
+        parts: [{ text: m.content }]
+      }));
+
+      const modelName = "gemini-3.5-flash";
+
+      const r = await aiGen.models.generateContent({
+        model: modelName,
+        contents,
+        config: {
+          systemInstruction: `You are an AI Speaking Coach named SpeakFlow. 
+          The current scenario is: ${scenario}.
+          Your goal is to practice ${scenario} with the user.
+          Keep your responses SHORT and CONVERSATIONAL (max 1-2 sentences).
+          Sound supportive and encouraging.
+          Ask follow-up questions naturally.
+          Gentle corrections are allowed but don't interrupt the flow.
+          Adapt tone to the user's confidence level.`,
+          temperature: 0.7,
+        }
+      });
+
+      res.json({ success: true, text: r.text });
+    } catch (err: any) {
+      console.error("[GEMINI PROXY CHAT ERROR]", err);
+      res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  app.post("/api/gemini/analyze", async (req, res) => {
+    const { transcript } = req.body;
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: "GEMINI_API_KEY is missing on the server configuration. Please declare it in your environment variables."
+      });
+    }
+
+    try {
+      const modelName = "gemini-3.5-flash";
+
+      const r = await aiGen.models.generateContent({
+        model: modelName,
+        contents: [{ parts: [{ text: `Analyze the following communication practice session transcript and provide detailed feedback in JSON format:\n\n${transcript}` }] }],
+        config: {
+          systemInstruction: `Analyze communication skills: Confidence, Clarity, Speaking Speed, Grammar, Vocabulary, Filler Words, Emotional Tone.
+          Provide an overall score (0-100) and category scores.
+          Include professional feedback, strengths, weaknesses, and improvement tips.`,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              overallScore: { type: Type.NUMBER },
+              scores: {
+                type: Type.OBJECT,
+                properties: {
+                  confidence: { type: Type.NUMBER },
+                  fluency: { type: Type.NUMBER },
+                  grammar: { type: Type.NUMBER },
+                  vocabulary: { type: Type.NUMBER },
+                  clarity: { type: Type.NUMBER }
+                }
+              },
+              strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+              weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+              improvementTips: { type: Type.ARRAY, items: { type: Type.STRING } },
+              fillerWordsCount: { type: Type.NUMBER },
+              paceAnalysis: { type: Type.STRING },
+              betterAlternatives: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    original: { type: Type.STRING },
+                    suggested: { type: Type.STRING },
+                    reason: { type: Type.STRING }
+                  }
+                }
+              }
+            },
+            required: ["overallScore", "scores", "strengths", "weaknesses", "improvementTips"]
+          }
+        }
+      });
+
+      res.json({ success: true, text: r.text });
+    } catch (err: any) {
+      console.error("[GEMINI PROXY ANALYZE ERROR]", err);
+      res.status(500).json({ success: false, error: err.message || String(err) });
+    }
   });
 
   // Server-Side Real-Time Traffic & Analytics Tracking Engine
