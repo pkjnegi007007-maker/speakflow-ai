@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Mic, MicOff, Settings, History, Trophy, Github, LogOut, User as UserIcon, Play, ChevronRight, BarChart2, Sparkles, ShieldCheck, Zap, HelpCircle, Code, Volume2, Calendar, MessageSquare, AlertCircle, X, Check, Pause } from 'lucide-react';
 import { useVoice } from './hooks/useVoice';
 import { formatTime } from './utils/time';
+import { getBestMatchingVoice, getVoiceUtteranceConfig } from './utils/voiceMatcher';
 import { useRealTimeMetrics } from './hooks/useRealTimeMetrics';
 import { getChatResponse, analyzeSession } from './lib/gemini';
 import { SCENARIOS, Scenario } from './constants/scenarios';
@@ -48,11 +49,55 @@ export default function App() {
   const [isLockedWall, setIsLockedWall] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
+  // Anonymous trials:
+  const [anonymousAttempts, setAnonymousAttempts] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('speakflow_anonymous_attempts');
+      return saved ? parseInt(saved, 10) : 0;
+    }
+    return 0;
+  });
+  const [showAuthWallModal, setShowAuthWallModal] = useState(false);
+
+  // Sync anonymous counter to local storage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('speakflow_anonymous_attempts', anonymousAttempts.toString());
+    }
+  }, [anonymousAttempts]);
+
   // Premium Customizer Options
   const [selectedVoice, setSelectedVoice] = useState('');
   const [coachSpeed, setCoachSpeed] = useState(1.0);
   const [coachTone, setCoachTone] = useState<'encouraging' | 'strict' | 'casual'>('encouraging');
   const [systemVoices, setSystemVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  // Custom demographics and regional accents
+  const [coachGender, setCoachGender] = useState<'default' | 'man' | 'woman' | 'kid'>('default');
+  const [coachAccent, setCoachAccent] = useState<'default' | 'us' | 'uk' | 'in' | 'au'>('default');
+
+  // Dynamically resolve voice configuration based on gender/accent/speed profile
+  const getSpeakVoiceConfig = () => {
+    let finalVoiceName = selectedVoice || undefined;
+    let finalSpeed = coachSpeed;
+    let finalPitch = 1.0;
+
+    if (coachGender !== 'default' || coachAccent !== 'default') {
+      const matched = getBestMatchingVoice(systemVoices, coachAccent, coachGender);
+      if (matched) {
+        finalVoiceName = matched.name;
+      }
+      const { pitch, rateModifier } = getVoiceUtteranceConfig(coachGender);
+      finalPitch = pitch;
+      finalSpeed = coachSpeed * rateModifier;
+    }
+
+    return {
+      voiceName: finalVoiceName,
+      speed: finalSpeed,
+      pitch: finalPitch
+    };
+  };
 
   // Selected session history detailed overlay
   const [selectedPastSession, setSelectedPastSession] = useState<any | null>(null);
@@ -249,10 +294,11 @@ export default function App() {
       if (response) {
         setSessionTranscript(prev => [...prev, { role: 'ai', content: response }]);
         setIsAiSpeaking(true);
+        const vc = getSpeakVoiceConfig();
         speak(response, () => {
           setIsAiSpeaking(false);
           startListening();
-        }, isPremium ? selectedVoice : undefined, isPremium ? coachSpeed : undefined);
+        }, isPremium ? vc.voiceName : undefined, isPremium ? vc.speed : undefined, isPremium ? vc.pitch : undefined);
       } else {
         setApiError("Coach is thinking... just a moment.");
         setTimeout(() => startListening(), 2000);
@@ -281,11 +327,20 @@ export default function App() {
   };
 
   const startSession = (scenario: Scenario) => {
-    // 1. Check Freemium Practice Limits
-    if (!isPremium && dailySessionsUsed >= 3) {
-      setIsLockedWall(true);
-      setShowPricingModal(true);
-      return;
+    // Check if user is not logged in, and handle anonymous usage tracking
+    if (!user) {
+      if (anonymousAttempts >= 10) {
+        setShowAuthWallModal(true);
+        return;
+      }
+      setAnonymousAttempts(prev => prev + 1);
+    } else {
+      // 1. Check Freemium Practice Limits for authenticated non-premium users
+      if (!isPremium && dailySessionsUsed >= 3) {
+        setIsLockedWall(true);
+        setShowPricingModal(true);
+        return;
+      }
     }
 
     setSelectedScenario(scenario);
@@ -296,9 +351,10 @@ export default function App() {
     
     // Initial greeting
     const greeting = `Hi! I'm your SpeakFlow coach. Let's practice ${scenario.title}. I'm ready when you are. Just start speaking now.`;
+    const vc = getSpeakVoiceConfig();
     speak(greeting, () => {
        startListening();
-    }, isPremium ? selectedVoice : undefined, isPremium ? coachSpeed : undefined);
+    }, isPremium ? vc.voiceName : undefined, isPremium ? vc.speed : undefined, isPremium ? vc.pitch : undefined);
   };
 
   const endSession = async () => {
@@ -432,13 +488,19 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <button onClick={handleSignIn} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full font-bold text-sm transition-all shadow-lg shadow-indigo-500/20">
-              Sign In
-            </button>
+            <div className="flex items-center gap-4">
+              <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500/10 border border-indigo-500/20 rounded-full text-xs text-indigo-300 font-bold">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                <span>{Math.max(0, 10 - anonymousAttempts)} / 10 Free Trials</span>
+              </div>
+              <button onClick={handleSignIn} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full font-bold text-sm transition-all shadow-lg shadow-indigo-500/20">
+                Sign In
+              </button>
+            </div>
           )}
         </div>
       </header>
-
+ 
       <main className="pt-20 pb-12 min-h-screen max-w-7xl mx-auto px-4">
         <AnimatePresence mode="wait">
           {view === 'landing' && (
@@ -472,9 +534,15 @@ export default function App() {
                   </div>
                 ))}
               </div>
-
+ 
               <button 
-                onClick={() => user ? setView('scenarios') : handleSignIn()}
+                onClick={() => {
+                  if (!user && anonymousAttempts >= 10) {
+                    setShowAuthWallModal(true);
+                  } else {
+                    setView('scenarios');
+                  }
+                }}
                 className="group relative px-8 py-4 bg-indigo-600 hover:bg-indigo-500 rounded-full font-bold text-lg flex items-center gap-3 transition-all shadow-xl shadow-indigo-600/20"
               >
                 <span>Start Practicing</span>
@@ -506,6 +574,25 @@ export default function App() {
                 )}
               </div>
 
+              {!user && (
+                <div className="mb-8 p-5 bg-gradient-to-r from-indigo-950/30 via-slate-900/40 to-fuchsia-950/20 rounded-[2rem] border border-indigo-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-1.5 mb-1">
+                      <span>🚀</span> Free Anonymous Practice Session Trial: {Math.max(0, 10 - anonymousAttempts)} of 10 left!
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Create a free account or sign in to save your comprehensive feedback reports, track WPM, and gain experience points.
+                    </p>
+                  </div>
+                  <button 
+                    onClick={handleSignIn} 
+                    className="flex-shrink-0 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-indigo-600/15 whitespace-nowrap scale-100 hover:scale-105 active:scale-95"
+                  >
+                    Save My Progress
+                  </button>
+                </div>
+              )}
+
               {/* Premium Speaking Coach customizer Panel */}
               <div className="mb-10 p-6 glass-panel rounded-[2rem] border border-white/10 relative overflow-hidden">
                 <div className="absolute inset-0 bg-indigo-500/5 blur-3xl scale-125 pointer-events-none" />
@@ -526,72 +613,130 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-                  {/* Accent Dialect choice */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+                  {/* Column 1: Voice Profile Profile Character */}
                   <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
-                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
-                      <Volume2 className="w-3.5 h-3.5 text-indigo-400" /> Coach Accent Dialect
-                    </label>
-                    <select 
-                      disabled={!isPremium}
-                      value={selectedVoice}
-                      onChange={e => setSelectedVoice(e.target.value)}
-                      className={`w-full bg-slate-950 text-slate-200 text-xs px-2.5 py-2.5 rounded-lg border border-white/10 ${!isPremium ? 'opacity-50 cursor-not-allowed bg-slate-900' : ''}`}
-                    >
-                      <option value="">Default AI Accent</option>
-                      {systemVoices.map(v => (
-                        <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
-                      ))}
-                    </select>
-                    {!isPremium && <span className="text-[9px] text-slate-600 font-bold mt-1">Requires SpeakFlow Premium</span>}
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-400" /> Voice Profile (Gender/Age)
+                      </label>
+                      <div className="grid grid-cols-2 gap-2 mt-1">
+                        {(['default', 'man', 'woman', 'kid'] as const).map(gender => (
+                          <button
+                            key={gender}
+                            disabled={!isPremium}
+                            onClick={() => setCoachGender(gender)}
+                            className={`py-2.5 text-xs font-bold rounded-lg border transition-all flex flex-col items-center justify-center gap-1 ${
+                              coachGender === gender 
+                                ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300 font-extrabold' 
+                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
+                            } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                          >
+                            <span className="text-sm">{gender === 'default' ? '👥' : gender === 'man' ? '👨' : gender === 'woman' ? '👩' : '👧'}</span>
+                            <span className="text-[10px] capitalize font-medium">{gender === 'default' ? 'Default' : gender}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {!isPremium && <span className="text-[9px] text-slate-600 font-semibold mt-1">Requires SpeakFlow Premium</span>}
                   </div>
 
-                  {/* Pace multiplier speed select */}
+                  {/* Column 2: Accent Dialect Region Selector with Override */}
                   <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
-                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
-                      <Zap className="w-3.5 h-3.5 text-amber-400" /> Speaking Speed Rate
-                    </label>
-                    <div className="flex gap-2">
-                      {[0.8, 1.0, 1.25].map(speed => (
-                        <button
-                          key={speed}
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1.5 flex items-center gap-1.5 align-middle">
+                        <Volume2 className="w-3.5 h-3.5 text-indigo-400" /> Accent Dialect Region
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5 mb-2">
+                        {(['default', 'us', 'uk', 'in', 'au'] as const).map(accent => (
+                          <button
+                            key={accent}
+                            disabled={!isPremium}
+                            onClick={() => {
+                              setCoachAccent(accent);
+                              setSelectedVoice(''); // resets raw override to prevent clash
+                            }}
+                            className={`py-1.5 text-[10px] font-bold rounded-md border transition-all flex items-center justify-center gap-1 ${
+                              coachAccent === accent && !selectedVoice
+                                ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300 font-extrabold' 
+                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
+                            } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                          >
+                            <span>{accent === 'default' ? '🌐 Auto' : accent === 'us' ? '🇺🇸 US' : accent === 'uk' ? '🇬🇧 UK' : accent === 'in' ? '🇮🇳 IN' : '🇦🇺 AU'}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="border-t border-white/5 pt-1.5 mt-1.5">
+                        <label className="text-[8px] font-bold text-slate-500 uppercase tracking-widest block mb-1">Micro-Target Voice</label>
+                        <select 
                           disabled={!isPremium}
-                          onClick={() => setCoachSpeed(speed)}
-                          className={`flex-grow py-2.5 text-xs font-bold rounded-lg border transition-all ${
-                            coachSpeed === speed 
-                              ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
-                              : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
-                          } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                          value={selectedVoice}
+                          onChange={e => {
+                            setSelectedVoice(e.target.value);
+                            setCoachAccent('default');
+                          }}
+                          className={`w-full bg-slate-950 text-slate-300 text-[10px] px-1.5 py-1 rounded border border-white/10 ${!isPremium ? 'opacity-50 cursor-not-allowed bg-slate-950' : ''}`}
                         >
-                          {speed === 0.8 ? 'Slow (0.8x)' : speed === 1.0 ? 'Normal (1x)' : 'Fast (1.25x)'}
-                        </button>
-                      ))}
+                          <option value="">-- All Browser Voices --</option>
+                          {systemVoices.map(v => (
+                            <option key={v.name} value={v.name}>{v.name.substring(0, 20)} ({v.lang})</option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
-                    {!isPremium && <span className="text-[9px] text-slate-600 font-bold mt-1">Requires SpeakFlow Premium</span>}
+                    {!isPremium && <span className="text-[9px] text-slate-600 font-semibold mt-1">Requires SpeakFlow Premium</span>}
                   </div>
 
-                  {/* Coach Tone Style Selection */}
+                  {/* Column 3: Pace multiplier speed select */}
                   <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
-                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
-                      <MessageSquare className="w-3.5 h-3.5 text-fuchsia-400" /> Feedback Behavior
-                    </label>
-                    <div className="flex gap-2">
-                      {(['encouraging', 'strict', 'casual'] as const).map(style => (
-                        <button
-                          key={style}
-                          disabled={!isPremium}
-                          onClick={() => setCoachTone(style)}
-                          className={`flex-grow py-2.5 text-[10px] font-bold uppercase tracking-wider rounded-lg border transition-all ${
-                            coachTone === style 
-                              ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
-                              : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
-                          } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
-                        >
-                          {style}
-                        </button>
-                      ))}
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
+                        <Zap className="w-3.5 h-3.5 text-amber-400" /> Speaking Speed Rate
+                      </label>
+                      <div className="flex flex-col gap-1.5 mt-1">
+                        {[0.8, 1.0, 1.25].map(speed => (
+                          <button
+                            key={speed}
+                            disabled={!isPremium}
+                            onClick={() => setCoachSpeed(speed)}
+                            className={`w-full py-2 text-xs font-bold rounded-lg border transition-all ${
+                              coachSpeed === speed 
+                                ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
+                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
+                            } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                          >
+                            {speed === 0.8 ? 'Slow (0.8x)' : speed === 1.0 ? 'Normal (1x)' : 'Fast (1.25x)'}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    {!isPremium && <span className="text-[9px] text-slate-600 font-bold mt-1">Requires SpeakFlow Premium</span>}
+                    {!isPremium && <span className="text-[9px] text-slate-600 font-semibold mt-1">Requires SpeakFlow Premium</span>}
+                  </div>
+
+                  {/* Column 4: Coach Tone Style Selection */}
+                  <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
+                        <MessageSquare className="w-3.5 h-3.5 text-fuchsia-400" /> Feedback Behavior
+                      </label>
+                      <div className="flex flex-col gap-1.5 mt-1">
+                        {(['encouraging', 'strict', 'casual'] as const).map(style => (
+                          <button
+                            key={style}
+                            disabled={!isPremium}
+                            onClick={() => setCoachTone(style)}
+                            className={`w-full py-2 text-[10px] font-bold uppercase tracking-wider rounded-lg border transition-all ${
+                              coachTone === style 
+                                ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
+                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
+                            } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                          >
+                            {style}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {!isPremium && <span className="text-[9px] text-slate-600 font-semibold mt-1">Requires SpeakFlow Premium</span>}
                   </div>
                 </div>
               </div>
@@ -967,6 +1112,77 @@ export default function App() {
             setShowDiagnostics(false);
           }}
         />
+      )}
+
+      {/* 5. Authorization / Sign Up Wall invitation modal */}
+      {showAuthWallModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md bg-slate-900 border border-indigo-500/30 rounded-[2.5rem] shadow-[0_0_50px_rgba(99,102,241,0.15)] p-8 text-slate-200 relative overflow-hidden"
+          >
+            {/* Ambient Background Glow */}
+            <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-600/10 rounded-full filter blur-xl pointer-events-none" />
+            <div className="absolute bottom-0 left-0 w-32 h-32 bg-fuchsia-600/10 rounded-full filter blur-xl pointer-events-none" />
+
+            <button 
+              onClick={() => setShowAuthWallModal(false)}
+              className="absolute top-6 right-6 p-2 hover:bg-white/5 rounded-full text-slate-400 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-gradient-to-tr from-indigo-500 to-indigo-650 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/20 mb-6 border border-indigo-400/20">
+                <Mic className="w-8 h-8 text-white animate-pulse" />
+              </div>
+
+              <h3 className="text-2xl font-black text-white tracking-tight mb-3">
+                Join SpeakFlow AI
+              </h3>
+              
+              <p className="text-slate-405 text-sm leading-relaxed mb-6 text-slate-300">
+                You've completed your <span className="text-indigo-450 font-bold text-indigo-300">10 free anonymous sessions</span>. Log in or create a free account to unlock your dashboard and resume practicing!
+              </p>
+
+              {/* Value Props */}
+              <div className="text-left w-full space-y-3.5 mb-8 bg-slate-950/40 p-5 rounded-2xl border border-white/5">
+                {[
+                  { icon: "💾", title: "Save Every Practice", desc: "Track WPM, confidence, and pace over time." },
+                  { icon: "📊", title: "Grammar & Filler Analysis", desc: "Get targeted critiques to speak like a pro." },
+                  { icon: "📈", title: "Level Up & Win XP", desc: "Save progress, build speaking streaks, and grow." }
+                ].map((prop, index) => (
+                  <div key={index} className="flex gap-3 items-start">
+                    <span className="text-lg leading-none mt-0.5">{prop.icon}</span>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-200">{prop.title}</h4>
+                      <p className="text-[11px] text-slate-400 leading-normal">{prop.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Sign In CTA */}
+              <button 
+                onClick={async () => {
+                  setShowAuthWallModal(false);
+                  await handleSignIn();
+                }}
+                className="w-full py-3.5 bg-indigo-650 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-black text-sm tracking-wide transition-all shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/30 flex items-center justify-center gap-2 scale-100 hover:scale-[1.02] active:scale-95"
+              >
+                <Sparkles className="w-4 h-4" /> Start Practicing (Free Sign Up)
+              </button>
+              
+              <button 
+                onClick={() => setShowAuthWallModal(false)}
+                className="text-xs text-slate-500 font-medium mt-4 hover:text-slate-400 transition-colors"
+              >
+                Maybe later, browse scenario catalog
+              </button>
+            </div>
+          </motion.div>
+        </div>
       )}
 
       {/* 4. Historical detailed review modal */}

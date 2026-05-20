@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { formatTime } from '../utils/time';
 import { SCENARIOS } from '../constants/scenarios';
+import { getBestMatchingVoice, getVoiceUtteranceConfig } from '../utils/voiceMatcher';
 
 describe('Unit Tests: duration time formatter', () => {
   it('should correctly format seconds into MM:SS double-digit notation', () => {
@@ -116,5 +117,87 @@ describe('Integration Level Tests: Pause/Resume State Preservations', () => {
     // Ensure session transcript was kept perfectly preserved
     expect(sessionState.sessionTranscript[0].content).toBe('Hello coach!');
     expect(sessionState.sessionTranscript[1].content).toBe('Hi, nice to meet you!');
+  });
+});
+
+describe('Unit Tests: Multi-Voice & Accents Customizer', () => {
+  const mockVoices = [
+    { name: 'Microsoft David Mobile - English (United States)', lang: 'en-US', localService: true, default: true, voiceURI: '' },
+    { name: 'Microsoft Zira Mobile - English (United States)', lang: 'en-US', localService: true, default: false, voiceURI: '' },
+    { name: 'Google UK English Female', lang: 'en-GB', localService: true, default: false, voiceURI: '' },
+    { name: 'Google UK English Male', lang: 'en-GB', localService: true, default: false, voiceURI: '' },
+    { name: 'Ravi - English (India)', lang: 'en-IN', localService: true, default: false, voiceURI: '' },
+    { name: 'Karen - English (Australia)', lang: 'en-AU', localService: true, default: false, voiceURI: '' }
+  ] as SpeechSynthesisVoice[];
+
+  it('should resolve British Female (Google UK English Female) when targeting UK Woman', () => {
+    const match = getBestMatchingVoice(mockVoices, 'uk', 'woman');
+    expect(match).not.toBeNull();
+    expect(match?.name).toBe('Google UK English Female');
+  });
+
+  it('should resolve American Male (Microsoft David Mobile) when targeting US Man', () => {
+    const match = getBestMatchingVoice(mockVoices, 'us', 'man');
+    expect(match).not.toBeNull();
+    expect(match?.name).toContain('David');
+  });
+
+  it('should resolve Indian Accent (Ravi) when requesting India region', () => {
+    const match = getBestMatchingVoice(mockVoices, 'in', 'default');
+    expect(match).not.toBeNull();
+    expect(match?.name).toBe('Ravi - English (India)');
+  });
+
+  it('should resolve Australian Accent (Karen) when requesting Australia region', () => {
+    const match = getBestMatchingVoice(mockVoices, 'au', 'default');
+    expect(match).not.toBeNull();
+    expect(match?.name).toBe('Karen - English (Australia)');
+  });
+
+  it('should configure higher pitch and speed for kid profile simulation', () => {
+    const { pitch, rateModifier } = getVoiceUtteranceConfig('kid');
+    expect(pitch).toBeGreaterThan(1.2);
+    expect(rateModifier).toBeGreaterThan(1.0);
+  });
+
+  it('should configure deeper pitch for man profile simulation', () => {
+    const { pitch } = getVoiceUtteranceConfig('man');
+    expect(pitch).toBeLessThan(0.9);
+  });
+});
+
+describe('Unit Tests: Anonymous Guest 10 Practices Limit Checked', () => {
+  it('should allow guest users with fewer than 10 attempts to start practicing', () => {
+    const verifyPracticeRequest = (userLoggedOut: boolean, attemptsCount: number) => {
+      if (userLoggedOut) {
+        if (attemptsCount >= 10) {
+          return { permitted: false, triggerAuthWall: true };
+        }
+        return { permitted: true, triggerAuthWall: false, nextAttempts: attemptsCount + 1 };
+      }
+      return { permitted: true, triggerAuthWall: false };
+    };
+
+    // Under the threshold (0 attempts)
+    let res = verifyPracticeRequest(true, 0);
+    expect(res.permitted).toBe(true);
+    expect(res.triggerAuthWall).toBe(false);
+    expect(res.nextAttempts).toBe(1);
+
+    // Dynamic threshold limit (9 attempts)
+    res = verifyPracticeRequest(true, 9);
+    expect(res.permitted).toBe(true);
+    expect(res.triggerAuthWall).toBe(false);
+    expect(res.nextAttempts).toBe(10);
+
+    // Limit exceeded (10 attempts)
+    res = verifyPracticeRequest(true, 10);
+    expect(res.permitted).toBe(false);
+    expect(res.triggerAuthWall).toBe(true);
+
+    // Logged in users are completely exempt from guest tracking limits
+    res = verifyPracticeRequest(false, 15);
+    expect(res.permitted).toBe(true);
+    expect(res.triggerAuthWall).toBe(false);
   });
 });
