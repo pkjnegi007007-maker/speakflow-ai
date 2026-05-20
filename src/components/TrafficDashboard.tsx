@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell, Legend } from 'recharts';
 import { Users, Eye, Play, ArrowUpRight, TrendingUp, ShieldCheck, MapPin, Globe, Award, Sparkles, Zap, Smartphone, Monitor } from 'lucide-react';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 interface VisitorLog {
   id: string;
@@ -25,7 +27,88 @@ export function TrafficDashboard() {
   // Visitor log updates loaded from server and combined with simulation
   const [recentLogs, setRecentLogs] = useState<VisitorLog[]>([]);
 
-  // Periodically fetch live operational stats from server
+  // 1. Listen to Firestore Real-Time Presence updates to support static external hosts natively (such as Vercel)
+  useEffect(() => {
+    try {
+      const presenceCol = collection(db, 'presence');
+      const unsubscribe = onSnapshot(presenceCol, (snapshot) => {
+        const now = Date.now();
+        const activeDocs: any[] = [];
+        
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          // Keep active heartbeats within 40 seconds
+          if (data && data.lastSeen && (now - data.lastSeen < 40000)) {
+            activeDocs.push({
+              id: doc.id,
+              ...data
+            });
+          }
+        });
+
+        // Set live active browser count
+        // Minimum 1 if user themselves are currently on the dashboard page
+        const count = activeDocs.length > 0 ? activeDocs.length : 1;
+        setActualActiveBrowsers(count);
+
+        // Update active unique visitors count
+        const uniqueTotalCount = snapshot.size > 0 ? snapshot.size : 1;
+        setActualUniqueTotal(uniqueTotalCount);
+
+        // Format these active documents as logs
+        const liveLogs: VisitorLog[] = activeDocs.map((docData, i) => {
+          const msAgo = now - docData.lastSeen;
+          let timeText = "Just now";
+          if (msAgo > 60000) {
+            timeText = `${Math.floor(msAgo / 60000)}m ago`;
+          } else if (msAgo > 5000) {
+            timeText = `${Math.floor(msAgo / 1000)}s ago`;
+          }
+          return {
+            id: docData.clientId || `real_${i}_${docData.lastSeen}`,
+            country: docData.country || "United States",
+            scenario: docData.scenario || "General View",
+            device: docData.device || "Desktop",
+            timestamp: timeText,
+            action: docData.lastAction || "Heartbeat"
+          };
+        });
+
+        // Sort live logs so newer ones are on top
+        liveLogs.sort((a, b) => {
+          const aId = a.id.startsWith('real_') ? parseInt(a.id.split('_')[2]) : Date.now();
+          const bId = b.id.startsWith('real_') ? parseInt(b.id.split('_')[2]) : Date.now();
+          return bId - aId;
+        });
+
+        // Incorporate into recent logs
+        setRecentLogs((prev) => {
+          // Keep mock records as buffer if live logs count is small
+          const uniqueLiveIds = new Set(liveLogs.map(l => l.id));
+          const filteredMocks = prev.filter(p => !uniqueLiveIds.has(p.id));
+          
+          // Re-populate with standard template if empty
+          const baseMocks = filteredMocks.length > 0 ? filteredMocks : [
+            { id: 'mock1', country: 'United States', scenario: 'Job Interview Pitch', device: 'Desktop', timestamp: '3m ago', action: 'Created session' },
+            { id: 'mock2', country: 'United Kingdom', scenario: 'Casual Cafe Talk', device: 'Mobile', timestamp: '5m ago', action: 'Completed review' },
+            { id: 'mock3', country: 'India', scenario: 'Tech Support Help Desk', device: 'Desktop', timestamp: '8m ago', action: 'Upgraded to Pro' },
+            { id: 'mock4', country: 'Germany', scenario: 'TED Speaker Style', device: 'Tablet', timestamp: '12m ago', action: 'Started practicing' },
+            { id: 'mock5', country: 'Canada', scenario: 'Job Interview Pitch', device: 'Mobile', timestamp: '15m ago', action: 'Requested Gemini summary' },
+          ];
+
+          return [...liveLogs, ...baseMocks].slice(0, 7);
+        });
+      }, (err) => {
+        console.warn("Firestore presence subscribe failed:", err);
+      });
+
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn("Firestore presence setup error:", e);
+    }
+  }, []);
+
+  // 2. Periodically fetch live operational stats from express server (if available/hosted)
   useEffect(() => {
     const fetchStats = async () => {
       try {
@@ -36,18 +119,20 @@ export function TrafficDashboard() {
             setActiveUsers(data.activeUsers);
             setTotalVisitors(data.totalVisitors);
             setTotalSessions(data.totalSessions);
-            setRecentLogs(data.recentLogs || []);
-            setActualActiveBrowsers(data.actualActiveCount || 0);
-            setActualUniqueTotal(data.actualUniqueCount || 0);
+            // Only overwrite if Vercel server routes are present, otherwise onSnapshot handles it
+            if (data.actualActiveCount > 0) {
+              setActualActiveBrowsers(data.actualActiveCount);
+              setActualUniqueTotal(data.actualUniqueTotal);
+            }
           }
         }
       } catch (err) {
-        console.warn('Analytics API unavailable, falling back to client-side emulation:', err);
+        // Fall back gracefully to Firestore or local simulation
       }
     };
 
     fetchStats();
-    const interval = setInterval(fetchStats, 3000);
+    const interval = setInterval(fetchStats, 6000);
     return () => clearInterval(interval);
   }, []);
 

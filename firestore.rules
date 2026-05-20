@@ -47,5 +47,10 @@ service cloud.firestore {
     match /challenges/{challengeId} {
       allow read: if isSignedIn();
     }
+
+    // Real-Time Presence Rules
+    match /presence/{clientId} {
+      allow read, write: if true;
+    }
   }
 }

@@ -53,6 +53,20 @@
         "xpReward": { "type": "integer" },
         "date": { "type": "string", "format": "date" }
       }
+    },
+    "Presence": {
+      "title": "Client Presence",
+      "description": "Active web browser presence heartbeats.",
+      "type": "object",
+      "properties": {
+        "clientId": { "type": "string" },
+        "country": { "type": "string" },
+        "device": { "type": "string" },
+        "lastSeen": { "type": "integer" },
+        "lastAction": { "type": "string" },
+        "scenario": { "type": "string" }
+      },
+      "required": ["clientId", "lastSeen"]
     }
   },
   "firestore": {
@@ -67,6 +81,10 @@
     "challenges/{challengeId}": {
       "schema": "Challenge",
       "description": "Global or user-specific challenges."
+    },
+    "presence/{clientId}": {
+      "schema": "Presence",
+      "description": "Real-time client active tracks."
     }
   }
 }

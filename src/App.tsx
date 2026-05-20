@@ -90,17 +90,37 @@ export default function App() {
       const width = window.innerWidth;
       const deviceType = width < 640 ? 'Mobile' : width < 1024 ? 'Tablet' : 'Desktop';
 
-      await fetch('/api/analytics/track', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      // 1. Double-write: Track server-side via native container proxy
+      try {
+        await fetch('/api/analytics/track', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId: uuid,
+            country: approxCountry,
+            device: deviceType,
+            action: actionName,
+            scenario: scenarioName || selectedScenario?.title || 'General Navigation'
+          })
+        });
+      } catch (apiErr) {
+        // Safe to ignore if server endpoint is not hosted
+      }
+
+      // 2. Real Firestore Cloud integration works on external hosts (e.g. Vercel)
+      try {
+        const presenceRef = doc(db, 'presence', uuid);
+        await setDoc(presenceRef, {
           clientId: uuid,
           country: approxCountry,
           device: deviceType,
-          action: actionName,
+          lastSeen: Date.now(),
+          lastAction: actionName,
           scenario: scenarioName || selectedScenario?.title || 'General Navigation'
-        })
-      });
+        }, { merge: true });
+      } catch (fsErr) {
+        console.warn('Firestore telemetry failed:', fsErr);
+      }
     } catch (err) {
       console.warn('Telemetry track failed:', err);
     }
