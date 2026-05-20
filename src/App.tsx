@@ -13,8 +13,9 @@ import { onAuthStateChanged, User } from 'firebase/auth';
 import { db, auth, signIn, signOut, handleFirestoreError, OperationType } from './lib/firebase';
 import { PricingModal } from './components/PricingModal';
 import { TestStudio } from './components/TestStudio';
+import { TrafficDashboard } from './components/TrafficDashboard';
 
-type View = 'landing' | 'scenarios' | 'session' | 'feedback' | 'history';
+type View = 'landing' | 'scenarios' | 'session' | 'feedback' | 'history' | 'analytics';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -65,6 +66,56 @@ export default function App() {
       localStorage.setItem('speakflow_anonymous_attempts', anonymousAttempts.toString());
     }
   }, [anonymousAttempts]);
+
+  // Client-Side Telemetry Event Tracker
+  const trackEvent = async (actionName: string, scenarioName?: string) => {
+    try {
+      if (typeof window === 'undefined') return;
+      let uuid = localStorage.getItem('speakflow_analytics_uuid');
+      if (!uuid) {
+        uuid = `cli_${Math.random().toString(36).substring(2, 10)}`;
+        localStorage.setItem('speakflow_analytics_uuid', uuid);
+      }
+      
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      let approxCountry = 'United States';
+      if (tz.includes('Kolkata') || tz.includes('Calcutta') || tz.includes('India')) approxCountry = 'India';
+      else if (tz.includes('London') || tz.includes('Europe/London')) approxCountry = 'United Kingdom';
+      else if (tz.includes('Sydney') || tz.includes('Australia')) approxCountry = 'Australia';
+      else if (tz.includes('Berlin')) approxCountry = 'Germany';
+      else if (tz.includes('Toronto')) approxCountry = 'Canada';
+      else if (tz.includes('Singapore')) approxCountry = 'Singapore';
+      else if (tz.includes('Tokyo')) approxCountry = 'Japan';
+
+      const width = window.innerWidth;
+      const deviceType = width < 640 ? 'Mobile' : width < 1024 ? 'Tablet' : 'Desktop';
+
+      await fetch('/api/analytics/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: uuid,
+          country: approxCountry,
+          device: deviceType,
+          action: actionName,
+          scenario: scenarioName || selectedScenario?.title || 'General Navigation'
+        })
+      });
+    } catch (err) {
+      console.warn('Telemetry track failed:', err);
+    }
+  };
+
+  // Telemetry Heartbeat scheduler
+  useEffect(() => {
+    trackEvent('Page View');
+    
+    const interval = setInterval(() => {
+      trackEvent('Heartbeat');
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [view]);
 
   // Premium Customizer Options
   const [selectedVoice, setSelectedVoice] = useState('');
@@ -348,6 +399,7 @@ export default function App() {
     isPausedRef.current = false;
     setIsPaused(false);
     setView('session');
+    trackEvent("Started practicing", scenario.title);
     
     // Initial greeting
     const greeting = `Hi! I'm your SpeakFlow coach. Let's practice ${scenario.title}. I'm ready when you are. Just start speaking now.`;
@@ -367,6 +419,7 @@ export default function App() {
     try {
       const result = await analyzeSession(fullTranscriptText);
       setFeedback(result);
+      trackEvent("Completed review", selectedScenario?.title);
       
       if (user) {
         // Save session and update XP
@@ -433,11 +486,25 @@ export default function App() {
       {/* Header */}
       <header className="fixed top-0 w-full z-50 bg-white/5 backdrop-blur-xl border-b border-white/10">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('landing')}>
-            <div className="w-10 h-10 bg-indigo-500 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/30">
-              <Mic className="w-5 h-5 text-white" />
+          <div className="flex items-center gap-5">
+            <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('landing')}>
+              <div className="w-10 h-10 bg-indigo-500 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                <Mic className="w-5 h-5 text-white" />
+              </div>
+              <span className="text-xl font-bold tracking-tight uppercase italic ml-1">SpeakFlow <span className="text-indigo-400">AI</span></span>
             </div>
-            <span className="text-xl font-bold tracking-tight uppercase italic ml-1">SpeakFlow <span className="text-indigo-400">AI</span></span>
+            
+            <button 
+              onClick={() => setView('analytics')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-all text-xs font-bold ${
+                view === 'analytics' 
+                ? 'bg-indigo-500/10 border border-indigo-550 border-indigo-500/20 text-indigo-300' 
+                : 'text-slate-400 hover:bg-white/5 border border-transparent'
+              }`}
+            >
+              <BarChart2 className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+              <span className="hidden sm:inline">Traffic Monitor</span>
+            </button>
           </div>
           
           {user ? (
@@ -624,21 +691,31 @@ export default function App() {
                         {(['default', 'man', 'woman', 'kid'] as const).map(gender => (
                           <button
                             key={gender}
-                            disabled={!isPremium}
-                            onClick={() => setCoachGender(gender)}
-                            className={`py-2.5 text-xs font-bold rounded-lg border transition-all flex flex-col items-center justify-center gap-1 ${
+                            onClick={() => {
+                              if (!isPremium && gender !== 'default') {
+                                setShowPricingModal(true);
+                              } else {
+                                setCoachGender(gender);
+                              }
+                            }}
+                            className={`py-2.5 text-xs font-bold rounded-lg border transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
                               coachGender === gender 
                                 ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300 font-extrabold' 
-                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
-                            } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/45'
+                            } ${!isPremium && gender !== 'default' ? 'border-amber-500/10 hover:border-amber-500/30' : ''}`}
                           >
-                            <span className="text-sm">{gender === 'default' ? '👥' : gender === 'man' ? '👨' : gender === 'woman' ? '👩' : '👧'}</span>
-                            <span className="text-[10px] capitalize font-medium">{gender === 'default' ? 'Default' : gender}</span>
+                            <span className="text-sm">
+                              {gender === 'default' ? '👥' : gender === 'man' ? '👨' : gender === 'woman' ? '👩' : '👧'}
+                            </span>
+                            <span className="text-[10px] capitalize font-medium flex items-center gap-1">
+                              {gender === 'default' ? 'Default' : gender}
+                              {!isPremium && gender !== 'default' && <span className="text-[9px]">🔒</span>}
+                            </span>
                           </button>
                         ))}
                       </div>
                     </div>
-                    {!isPremium && <span className="text-[9px] text-slate-600 font-semibold mt-1">Requires SpeakFlow Premium</span>}
+                    {!isPremium && <span className="text-[9px] text-amber-400/80 font-bold mt-2 flex items-center gap-1">🔒 Requires SpeakFlow Pro</span>}
                   </div>
 
                   {/* Column 2: Accent Dialect Region Selector with Override */}
@@ -651,23 +728,34 @@ export default function App() {
                         {(['default', 'us', 'uk', 'in', 'au'] as const).map(accent => (
                           <button
                             key={accent}
-                            disabled={!isPremium}
                             onClick={() => {
-                              setCoachAccent(accent);
-                              setSelectedVoice(''); // resets raw override to prevent clash
+                              if (!isPremium && accent !== 'default') {
+                                setShowPricingModal(true);
+                              } else {
+                                setCoachAccent(accent);
+                                setSelectedVoice(''); // resets raw override to prevent clash
+                              }
                             }}
-                            className={`py-1.5 text-[10px] font-bold rounded-md border transition-all flex items-center justify-center gap-1 ${
+                            className={`py-1.5 text-[10px] font-bold rounded-md border transition-all flex items-center justify-center gap-1 cursor-pointer ${
                               coachAccent === accent && !selectedVoice
                                 ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300 font-extrabold' 
-                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
-                            } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/45'
+                            } ${!isPremium && accent !== 'default' ? 'border-amber-500/10 hover:border-amber-500/30' : ''}`}
                           >
-                            <span>{accent === 'default' ? '🌐 Auto' : accent === 'us' ? '🇺🇸 US' : accent === 'uk' ? '🇬🇧 UK' : accent === 'in' ? '🇮🇳 IN' : '🇦🇺 AU'}</span>
+                            <span>
+                              {accent === 'default' ? '🌐 Auto' : accent === 'us' ? '🇺🇸 US 🔒' : accent === 'uk' ? '🇬🇧 UK 🔒' : accent === 'in' ? '🇮🇳 IN 🔒' : '🇦🇺 AU 🔒'}
+                            </span>
                           </button>
                         ))}
                       </div>
-                      <div className="border-t border-white/5 pt-1.5 mt-1.5">
-                        <label className="text-[8px] font-bold text-slate-500 uppercase tracking-widest block mb-1">Micro-Target Voice</label>
+                      <div className="border-t border-white/5 pt-1.5 mt-1.5 relative">
+                        {!isPremium && (
+                          <div 
+                            onClick={() => setShowPricingModal(true)}
+                            className="absolute inset-0 cursor-pointer z-10" 
+                          />
+                        )}
+                        <label className="text-[8px] font-bold text-slate-500 uppercase tracking-widest block mb-1">Micro-Target Voice {!isPremium && '🔒'}</label>
                         <select 
                           disabled={!isPremium}
                           value={selectedVoice}
@@ -675,7 +763,7 @@ export default function App() {
                             setSelectedVoice(e.target.value);
                             setCoachAccent('default');
                           }}
-                          className={`w-full bg-slate-950 text-slate-300 text-[10px] px-1.5 py-1 rounded border border-white/10 ${!isPremium ? 'opacity-50 cursor-not-allowed bg-slate-950' : ''}`}
+                          className={`w-full bg-slate-950 text-slate-300 text-[10px] px-1.5 py-1 rounded border border-white/10 ${!isPremium ? 'opacity-60 bg-slate-950 cursor-pointer' : ''}`}
                         >
                           <option value="">-- All Browser Voices --</option>
                           {systemVoices.map(v => (
@@ -684,7 +772,7 @@ export default function App() {
                         </select>
                       </div>
                     </div>
-                    {!isPremium && <span className="text-[9px] text-slate-600 font-semibold mt-1">Requires SpeakFlow Premium</span>}
+                    {!isPremium && <span className="text-[9px] text-amber-400/80 font-bold mt-2 flex items-center gap-1">🔒 Requires SpeakFlow Pro</span>}
                   </div>
 
                   {/* Column 3: Pace multiplier speed select */}
@@ -697,20 +785,27 @@ export default function App() {
                         {[0.8, 1.0, 1.25].map(speed => (
                           <button
                             key={speed}
-                            disabled={!isPremium}
-                            onClick={() => setCoachSpeed(speed)}
-                            className={`w-full py-2 text-xs font-bold rounded-lg border transition-all ${
+                            onClick={() => {
+                              if (!isPremium && speed !== 1.0) {
+                                setShowPricingModal(true);
+                              } else {
+                                setCoachSpeed(speed);
+                              }
+                            }}
+                            className={`w-full py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
                               coachSpeed === speed 
                                 ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
                                 : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
-                            } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                            } ${!isPremium && speed !== 1.0 ? 'border-amber-500/10 hover:border-amber-500/30' : ''}`}
                           >
-                            {speed === 0.8 ? 'Slow (0.8x)' : speed === 1.0 ? 'Normal (1x)' : 'Fast (1.25x)'}
+                            <span>
+                              {speed === 0.8 ? 'Slow (0.8x) 🔒' : speed === 1.0 ? 'Normal (1x)' : 'Fast (1.25x) 🔒'}
+                            </span>
                           </button>
                         ))}
                       </div>
                     </div>
-                    {!isPremium && <span className="text-[9px] text-slate-600 font-semibold mt-1">Requires SpeakFlow Premium</span>}
+                    {!isPremium && <span className="text-[9px] text-amber-400/80 font-bold mt-2 flex items-center gap-1">🔒 Requires SpeakFlow Pro</span>}
                   </div>
 
                   {/* Column 4: Coach Tone Style Selection */}
@@ -723,20 +818,27 @@ export default function App() {
                         {(['encouraging', 'strict', 'casual'] as const).map(style => (
                           <button
                             key={style}
-                            disabled={!isPremium}
-                            onClick={() => setCoachTone(style)}
-                            className={`w-full py-2 text-[10px] font-bold uppercase tracking-wider rounded-lg border transition-all ${
+                            onClick={() => {
+                              if (!isPremium && style !== 'encouraging') {
+                                setShowPricingModal(true);
+                              } else {
+                                setCoachTone(style);
+                              }
+                            }}
+                            className={`w-full py-2 text-[10px] font-bold uppercase tracking-wider rounded-lg border transition-all cursor-pointer ${
                               coachTone === style 
                                 ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
                                 : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
-                            } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                            } ${!isPremium && style !== 'encouraging' ? 'border-amber-500/10 hover:border-amber-500/30' : ''}`}
                           >
-                            {style}
+                            <span>
+                              {style} {(!isPremium && style !== 'encouraging') && '🔒'}
+                            </span>
                           </button>
                         ))}
                       </div>
                     </div>
-                    {!isPremium && <span className="text-[9px] text-slate-600 font-semibold mt-1">Requires SpeakFlow Premium</span>}
+                    {!isPremium && <span className="text-[9px] text-amber-400/80 font-bold mt-2 flex items-center gap-1">🔒 Requires SpeakFlow Pro</span>}
                   </div>
                 </div>
               </div>
@@ -1079,6 +1181,17 @@ export default function App() {
             </div>
           )}
 
+          {view === 'analytics' && (
+            <motion.div
+              key="analytics"
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -15 }}
+            >
+              <TrafficDashboard />
+            </motion.div>
+          )}
+
         </AnimatePresence>
       </main>
 
@@ -1095,6 +1208,7 @@ export default function App() {
               lastActive: serverTimestamp()
             });
             setIsPremium(true);
+            trackEvent("Upgraded to Pro");
           }} 
         />
       )}

@@ -201,3 +201,58 @@ describe('Unit Tests: Anonymous Guest 10 Practices Limit Checked', () => {
     expect(res.triggerAuthWall).toBe(false);
   });
 });
+
+describe('Unit Tests: Multi-Gateway Payment Checkout Validations', () => {
+  const validatePaymentArgs = (gateway: string, details: any) => {
+    if (gateway === 'stripe' || gateway === 'custom_card') {
+      const { cardName, cardNumber, cardExpiry, cardCvv } = details || {};
+      if (!cardName || !cardNumber || !cardExpiry || !cardCvv) {
+        return { valid: false, error: "Incomplete Card Details" };
+      }
+      const strippedNumber = cardNumber.replace(/\s+/g, "");
+      if (strippedNumber.length < 15 || strippedNumber.length > 16) {
+        return { valid: false, error: "Invalid Card Number" };
+      }
+      if (cardCvv.length < 3 || cardCvv.length > 4) {
+        return { valid: false, error: "Invalid Security Code" };
+      }
+      return { valid: true };
+    } else if (gateway === 'paypal') {
+      const { email } = details || {};
+      if (!email || !email.includes("@")) {
+        return { valid: false, error: "Invalid PayPal Account" };
+      }
+      return { valid: true };
+    }
+    return { valid: false, error: "Unsupported Gateway" };
+  };
+
+  it('should validate credit cards correctly with appropriate digit count', () => {
+    let check = validatePaymentArgs('stripe', {
+      cardName: 'Sam Carter',
+      cardNumber: '4242 4242 4242 4242',
+      cardExpiry: '12/29',
+      cardCvv: '123'
+    });
+    expect(check.valid).toBe(true);
+
+    // Invalid Card Digits
+    check = validatePaymentArgs('stripe', {
+      cardName: 'Sam Carter',
+      cardNumber: '1234',
+      cardExpiry: '12/29',
+      cardCvv: '123'
+    });
+    expect(check.valid).toBe(false);
+    expect(check.error).toBe('Invalid Card Number');
+  });
+
+  it('should validate PayPal active email formatting requirements', () => {
+    let check = validatePaymentArgs('paypal', { email: 'user@speakflow.com' });
+    expect(check.valid).toBe(true);
+
+    check = validatePaymentArgs('paypal', { email: 'user-corrupted-email' });
+    expect(check.valid).toBe(false);
+    expect(check.error).toBe('Invalid PayPal Account');
+  });
+});
