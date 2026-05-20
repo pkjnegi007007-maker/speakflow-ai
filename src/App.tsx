@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mic, MicOff, Settings, History, Trophy, Github, LogOut, User as UserIcon, Play, ChevronRight, BarChart2, Sparkles, ShieldCheck, Zap, HelpCircle, Code, Volume2, Calendar, MessageSquare, AlertCircle, X, Check } from 'lucide-react';
+import { Mic, MicOff, Settings, History, Trophy, Github, LogOut, User as UserIcon, Play, ChevronRight, BarChart2, Sparkles, ShieldCheck, Zap, HelpCircle, Code, Volume2, Calendar, MessageSquare, AlertCircle, X, Check, Pause } from 'lucide-react';
 import { useVoice } from './hooks/useVoice';
+import { formatTime } from './utils/time';
 import { useRealTimeMetrics } from './hooks/useRealTimeMetrics';
 import { getChatResponse, analyzeSession } from './lib/gemini';
 import { SCENARIOS, Scenario } from './constants/scenarios';
@@ -26,6 +27,7 @@ export default function App() {
   const [feedback, setFeedback] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [sessionSeconds, setSessionSeconds] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
   const [firebaseError, setFirebaseError] = useState<string | null>(null);
 
   // Freemium structures & Diagnostics States
@@ -73,21 +75,18 @@ export default function App() {
   // Session duration timer
   useEffect(() => {
     let interval: any;
-    if (view === 'session') {
+    if (view === 'session' && !isPaused) {
       interval = setInterval(() => {
         setSessionSeconds(s => s + 1);
       }, 1000);
-    } else {
+    }
+    if (view !== 'session') {
       setSessionSeconds(0);
     }
     return () => clearInterval(interval);
-  }, [view]);
+  }, [view, isPaused]);
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
+
 
   // Auth Listener
   useEffect(() => {
@@ -164,7 +163,7 @@ export default function App() {
 
   // Handle Automatic Turn-Taking (Silence Detection)
   useEffect(() => {
-    if (isListening && (transcript.trim() || interimTranscript.trim()) && view === 'session') {
+    if (isListening && !isPaused && (transcript.trim() || interimTranscript.trim()) && view === 'session') {
       const silenceDuration = 1800; // 1.8s silence
       const checkSilence = setInterval(() => {
         const now = Date.now();
@@ -174,14 +173,14 @@ export default function App() {
       }, 500);
       return () => clearInterval(checkSilence);
     }
-  }, [isListening, transcript, interimTranscript, view, lastActivity, isAiProcessing, isAiSpeaking]);
+  }, [isListening, transcript, interimTranscript, view, lastActivity, isAiProcessing, isAiSpeaking, isPaused]);
 
   // Handle User Voice Turn-Taking (Auto-trigger AI response after user finishes)
   useEffect(() => {
-    if (!isListening && transcript.trim() && view === 'session' && !isAiProcessing) {
+    if (!isListening && !isPaused && transcript.trim() && view === 'session' && !isAiProcessing) {
       handleUserSpeechFinished(transcript.trim());
     }
-  }, [isListening, transcript, view, isAiProcessing]);
+  }, [isListening, transcript, view, isAiProcessing, isPaused]);
 
   const handleUserSpeechFinished = async (content: string) => {
     if (isAiProcessing) return;
@@ -216,6 +215,18 @@ export default function App() {
     }
   };
 
+  const handlePauseSession = () => {
+    setIsPaused(true);
+    stopListening();
+    cancelSpeech();
+    setIsAiSpeaking(false);
+  };
+
+  const handleResumeSession = () => {
+    setIsPaused(false);
+    startListening();
+  };
+
   const startSession = (scenario: Scenario) => {
     // 1. Check Freemium Practice Limits
     if (!isPremium && dailySessionsUsed >= 3) {
@@ -226,6 +237,7 @@ export default function App() {
 
     setSelectedScenario(scenario);
     setSessionTranscript([]);
+    setIsPaused(false);
     setView('session');
     
     // Initial greeting
@@ -575,27 +587,41 @@ export default function App() {
                 <div className="relative">
                    <div className="absolute inset-0 bg-indigo-500/20 rounded-full blur-2xl animate-pulse" />
                    <div className="relative w-56 h-56 bg-gradient-to-tr from-indigo-500 to-fuchsia-500 rounded-full flex items-center justify-center border-4 border-white/10 shadow-[0_0_60px_rgba(99,102,241,0.3)]">
-                      <div className="w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)] bg-slate-950 rounded-full flex items-center justify-center">
-                         <VoiceWaveform isActive={isListening || isAiProcessing || isAiSpeaking} />
+                      <div className="w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)] bg-slate-950 rounded-full flex items-center justify-center relative overflow-hidden">
+                        {isPaused && (
+                          <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center z-10">
+                            <Pause className="w-10 h-10 text-amber-500 animate-pulse mb-2" />
+                            <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Paused</span>
+                          </div>
+                        )}
+                        <VoiceWaveform isActive={!isPaused && (isListening || isAiProcessing || isAiSpeaking)} />
                       </div>
                    </div>
                 </div>
                 
                 <div className="mt-12 text-center min-h-[5rem] max-w-sm px-4">
-                  {interimTranscript && (
-                    <p className="text-slate-100 font-semibold text-xl leading-relaxed italic">
-                      "{interimTranscript}"
+                  {isPaused ? (
+                    <p className="text-amber-500/80 font-bold uppercase tracking-widest text-[10px]">
+                      Session is paused. Tap resume to continue.
                     </p>
-                  )}
-                  {!interimTranscript && transcript && (
-                    <p className="text-slate-500 text-lg leading-relaxed">
-                      {transcript}
-                    </p>
-                  )}
-                  {!interimTranscript && !transcript && (
-                    <p className={`${apiError ? 'text-red-400' : 'text-indigo-400'} font-bold uppercase tracking-widest text-[10px] animate-pulse`}>
-                      {apiError || ((isAiProcessing || isAiSpeaking) ? "AI Coach is speaking..." : "Listening for your voice...")}
-                    </p>
+                  ) : (
+                    <>
+                      {interimTranscript && (
+                        <p className="text-slate-100 font-semibold text-xl leading-relaxed italic">
+                          "{interimTranscript}"
+                        </p>
+                      )}
+                      {!interimTranscript && transcript && (
+                        <p className="text-slate-500 text-lg leading-relaxed">
+                          {transcript}
+                        </p>
+                      )}
+                      {!interimTranscript && !transcript && (
+                        <p className={`${apiError ? 'text-red-400' : 'text-indigo-400'} font-bold uppercase tracking-widest text-[10px] animate-pulse`}>
+                          {apiError || ((isAiProcessing || isAiSpeaking) ? "AI Coach is speaking..." : "Listening for your voice...")}
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -619,26 +645,60 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="mt-12 flex items-center gap-10">
-                <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={isListening ? stopListening : startListening}
-                  className={`w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-all border-4 border-white/10 ${
-                    isListening ? 'bg-red-500 shadow-red-500/30' : 'bg-indigo-600 shadow-indigo-600/30'
-                  }`}
-                >
-                  {isListening ? <MicOff className="w-8 h-8" /> : <Mic className="w-8 h-8" />}
-                </motion.button>
-
-                <div className="flex flex-col items-center">
-                  <button 
-                    onClick={endSession}
-                    className="px-8 py-3 bg-white/5 hover:bg-white/10 backdrop-blur-md border border-white/10 text-slate-100 rounded-full font-bold transition-all text-sm uppercase tracking-widest"
+              <div id="session-controls" className="mt-12 flex flex-col items-center gap-4 w-full max-w-sm">
+                <div className="flex items-center justify-center gap-6 w-full">
+                  {/* Mic Toggle Button */}
+                  <motion.button
+                    whileHover={{ scale: isPaused ? 1.0 : 1.08 }}
+                    whileTap={{ scale: isPaused ? 1.0 : 0.95 }}
+                    disabled={isPaused}
+                    onClick={isListening ? stopListening : startListening}
+                    id="mic-toggle-btn"
+                    className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all border border-white/10 ${
+                      isPaused 
+                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-40' 
+                        : isListening 
+                          ? 'bg-red-500/90 text-white shadow-red-500/10 hover:bg-red-500' 
+                          : 'bg-indigo-600/90 text-white shadow-indigo-600/10 hover:bg-indigo-650'
+                    }`}
+                    title={isPaused ? "Session is paused" : isListening ? "Mute Microphone" : "Unmute Microphone"}
                   >
-                    End Session
-                  </button>
-                  <span className="text-[10px] text-slate-600 font-bold mt-2 tracking-widest">{formatTime(sessionSeconds)}</span>
+                    {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                  </motion.button>
+
+                  {/* Pause / Resume Button */}
+                  <motion.button
+                    whileHover={{ scale: 1.08 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={isPaused ? handleResumeSession : handlePauseSession}
+                    id="pause-resume-btn"
+                    className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all border border-white/10 ${
+                      isPaused 
+                        ? 'bg-amber-500 text-slate-950 shadow-amber-500/20 hover:bg-amber-400' 
+                        : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                    }`}
+                    title={isPaused ? "Resume Practice" : "Pause Practice"}
+                  >
+                    {isPaused ? <Play className="w-5 h-5 fill-slate-950" /> : <Pause className="w-5 h-5 fill-slate-200" />}
+                  </motion.button>
+
+                  {/* End Session Button */}
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={endSession}
+                    id="end-session-btn"
+                    className="px-6 py-3.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-200 border border-rose-500/30 rounded-2xl font-bold transition-all text-xs uppercase tracking-widest"
+                  >
+                    End Practice
+                  </motion.button>
+                </div>
+                
+                {/* Timer indicators */}
+                <div className="flex items-center gap-2 text-slate-500 text-xs font-mono font-bold mt-1">
+                  <span>Duration:</span>
+                  <span className={`${isPaused ? 'text-amber-500 animate-pulse' : 'text-slate-300'}`}>{formatTime(sessionSeconds)}</span>
+                  {isPaused && <span className="text-[10px] text-amber-500/70 uppercase tracking-widest">(Paused)</span>}
                 </div>
               </div>
             </motion.div>
