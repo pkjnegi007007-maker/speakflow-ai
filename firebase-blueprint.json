@@ -10,6 +10,9 @@
         "xp": { "type": "integer" },
         "level": { "type": "integer" },
         "streak": { "type": "integer" },
+        "isPremium": { "type": "boolean" },
+        "dailySessionsUsed": { "type": "integer" },
+        "lastSessionResetDate": { "type": "string", "format": "date" },
         "lastActive": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" }
       },

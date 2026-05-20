@@ -94,10 +94,18 @@ export function useVoice() {
     }
   }, []);
 
-  const speak = useCallback((text: string, onEnd?: () => void) => {
+  const speak = useCallback((text: string, onEnd?: () => void, voiceName?: string, rate?: number) => {
     if (synthesisRef.current) {
       synthesisRef.current.cancel(); 
       const utterance = new SpeechSynthesisUtterance(text);
+      if (voiceName) {
+        const voices = synthesisRef.current.getVoices();
+        const found = voices.find(v => v.name === voiceName);
+        if (found) utterance.voice = found;
+      }
+      if (rate) {
+        utterance.rate = rate;
+      }
       utterance.onend = () => {
         if (onEnd) onEnd();
       };

@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mic, MicOff, Settings, History, Trophy, Github, LogOut, User as UserIcon, Play, ChevronRight, BarChart2 } from 'lucide-react';
+import { Mic, MicOff, Settings, History, Trophy, Github, LogOut, User as UserIcon, Play, ChevronRight, BarChart2, Sparkles, ShieldCheck, Zap, HelpCircle, Code, Volume2, Calendar, MessageSquare, AlertCircle, X, Check } from 'lucide-react';
 import { useVoice } from './hooks/useVoice';
 import { useRealTimeMetrics } from './hooks/useRealTimeMetrics';
 import { getChatResponse, analyzeSession } from './lib/gemini';
 import { SCENARIOS, Scenario } from './constants/scenarios';
 import { VoiceWaveform } from './components/VoiceWaveform';
-import { auth, signIn, signOut, db } from './lib/firebase';
+import { doc, setDoc, getDoc, updateDoc, increment, collection, addDoc, query, where, orderBy, limit, getDocs, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, setDoc, getDoc, updateDoc, increment, collection, addDoc, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+import { db, auth, signIn, signOut, handleFirestoreError, OperationType } from './lib/firebase';
+import { PricingModal } from './components/PricingModal';
+import { TestStudio } from './components/TestStudio';
 
 type View = 'landing' | 'scenarios' | 'session' | 'feedback' | 'history';
 
@@ -24,6 +26,36 @@ export default function App() {
   const [feedback, setFeedback] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [sessionSeconds, setSessionSeconds] = useState(0);
+  const [firebaseError, setFirebaseError] = useState<string | null>(null);
+
+  // Freemium structures & Diagnostics States
+  const [isPremium, setIsPremium] = useState(false);
+  const [dailySessionsUsed, setDailySessionsUsed] = useState(0);
+  const [lastSessionResetDate, setLastSessionResetDate] = useState('');
+  const [showPricingModal, setShowPricingModal] = useState(false);
+  const [isLockedWall, setIsLockedWall] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  // Premium Customizer Options
+  const [selectedVoice, setSelectedVoice] = useState('');
+  const [coachSpeed, setCoachSpeed] = useState(1.0);
+  const [coachTone, setCoachTone] = useState<'encouraging' | 'strict' | 'casual'>('encouraging');
+  const [systemVoices, setSystemVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  // Selected session history detailed overlay
+  const [selectedPastSession, setSelectedPastSession] = useState<any | null>(null);
+
+  // Load browser speech voices once ready
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      const loadAllVoices = () => {
+        const voices = window.speechSynthesis.getVoices();
+        setSystemVoices(voices.filter(v => v.lang.startsWith('en')));
+      };
+      loadAllVoices();
+      window.speechSynthesis.onvoiceschanged = loadAllVoices;
+    }
+  }, []);
 
   const {
     isListening,
@@ -63,19 +95,54 @@ export default function App() {
       setUser(u);
       setAuthLoading(false);
       if (u) {
-        // Initialize user record if not exists
         const userRef = doc(db, 'users', u.uid);
-        const userSnap = await getDoc(userRef);
-        if (!userSnap.exists()) {
-          await setDoc(userRef, {
-            userId: u.uid,
-            displayName: u.displayName,
-            xp: 0,
-            level: 1,
-            streak: 0,
-            createdAt: new Date().toISOString()
-          });
+        try {
+          const userSnap = await getDoc(userRef);
+          const todayDateStr = new Date().toISOString().split('T')[0];
+          
+          if (!userSnap.exists()) {
+            const initialProfile = {
+              userId: u.uid,
+              displayName: u.displayName || 'SpeakFlow User',
+              xp: 0,
+              level: 1,
+              streak: 0,
+              isPremium: false,
+              dailySessionsUsed: 0,
+              lastSessionResetDate: todayDateStr,
+              createdAt: serverTimestamp(),
+              lastActive: serverTimestamp()
+            };
+            await setDoc(userRef, initialProfile);
+            setIsPremium(false);
+            setDailySessionsUsed(0);
+            setLastSessionResetDate(todayDateStr);
+          } else {
+            const data = userSnap.data();
+            const storedIsPremium = data?.isPremium || false;
+            let storedSessionsUsed = data?.dailySessionsUsed || 0;
+            let storedResetDate = data?.lastSessionResetDate || '';
+
+            if (storedResetDate !== todayDateStr) {
+              storedSessionsUsed = 0;
+              storedResetDate = todayDateStr;
+              await updateDoc(userRef, {
+                dailySessionsUsed: 0,
+                lastSessionResetDate: todayDateStr,
+                lastActive: serverTimestamp()
+              });
+            }
+
+            setIsPremium(storedIsPremium);
+            setDailySessionsUsed(storedSessionsUsed);
+            setLastSessionResetDate(storedResetDate);
+          }
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `users/${u.uid}`);
         }
+      } else {
+        setIsPremium(false);
+        setDailySessionsUsed(0);
       }
     });
     return unsubscribe;
@@ -124,19 +191,18 @@ export default function App() {
     setIsAiProcessing(true);
 
     try {
-      const response = await getChatResponse(selectedScenario?.title || 'Communication', [
-        ...sessionTranscript,
-        { role: 'user', content }
-      ]);
+      const chatPrompt = [...sessionTranscript, { role: 'user', content }];
+      // Customize persona tone input for Gemini prompt
+      const customizedScenario = `${selectedScenario?.title || 'Communication'} (Tone style: ${coachTone})`;
+      const response = await getChatResponse(customizedScenario, chatPrompt);
       
       if (response) {
         setSessionTranscript(prev => [...prev, { role: 'ai', content: response }]);
         setIsAiSpeaking(true);
         speak(response, () => {
           setIsAiSpeaking(false);
-          // Restart listening after AI finishes speaking
           startListening();
-        });
+        }, isPremium ? selectedVoice : undefined, isPremium ? coachSpeed : undefined);
       } else {
         setApiError("Coach is thinking... just a moment.");
         setTimeout(() => startListening(), 2000);
@@ -151,6 +217,13 @@ export default function App() {
   };
 
   const startSession = (scenario: Scenario) => {
+    // 1. Check Freemium Practice Limits
+    if (!isPremium && dailySessionsUsed >= 3) {
+      setIsLockedWall(true);
+      setShowPricingModal(true);
+      return;
+    }
+
     setSelectedScenario(scenario);
     setSessionTranscript([]);
     setView('session');
@@ -159,7 +232,7 @@ export default function App() {
     const greeting = `Hi! I'm your SpeakFlow coach. Let's practice ${scenario.title}. I'm ready when you are. Just start speaking now.`;
     speak(greeting, () => {
        startListening();
-    });
+    }, isPremium ? selectedVoice : undefined, isPremium ? coachSpeed : undefined);
   };
 
   const endSession = async () => {
@@ -175,25 +248,47 @@ export default function App() {
       
       if (user) {
         // Save session and update XP
-        const sessionRef = collection(db, 'sessions');
-        await addDoc(sessionRef, {
-          userId: user.uid,
-          scenario: selectedScenario?.id,
-          scores: result.scores,
-          overallScore: result.overallScore,
-          feedback: result,
-          createdAt: new Date().toISOString()
-        });
-        
-        const userRef = doc(db, 'users', user.uid);
-        await updateDoc(userRef, {
-          xp: increment(result.overallScore),
-        });
+        const sessionPath = 'sessions';
+        try {
+          await addDoc(collection(db, sessionPath), {
+            userId: user.uid,
+            scenario: selectedScenario?.id,
+            scores: result.scores,
+            overallScore: result.overallScore,
+            feedback: result,
+            createdAt: serverTimestamp()
+          });
+          
+          const nextVal = isPremium ? dailySessionsUsed : (dailySessionsUsed + 1);
+          setDailySessionsUsed(nextVal);
+
+          const userRef = doc(db, 'users', user.uid);
+          await updateDoc(userRef, {
+            xp: increment(result.overallScore),
+            dailySessionsUsed: nextVal,
+            lastActive: serverTimestamp()
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, sessionPath);
+        }
       }
     } catch (err) {
       console.error(err);
     } finally {
       setIsAiProcessing(false);
+    }
+  };
+
+  const handleSignIn = async () => {
+    setFirebaseError(null);
+    try {
+      await signIn();
+    } catch (err: any) {
+      if (err.code === 'auth/popup-blocked') {
+        setFirebaseError("Sign-in popup blocked. Please enable popups.");
+      } else {
+        setFirebaseError("Connectivity issue. Please try again.");
+      }
     }
   };
 
@@ -225,13 +320,44 @@ export default function App() {
           
           {user ? (
             <div className="flex items-center gap-4">
-              <div className="hidden md:flex items-center bg-white/5 px-4 py-1.5 rounded-full border border-white/10">
-                <Trophy className="w-4 h-4 text-orange-400 mr-2" />
-                <span className="text-sm font-semibold">12 Day Streak</span>
-              </div>
-              <button onClick={() => setView('history')} className="p-2 hover:bg-white/10 rounded-full transition-colors text-slate-400">
+              {firebaseError && (
+                <div className="text-[10px] bg-red-500/20 text-red-400 px-3 py-1 rounded-full border border-red-500/30 animate-pulse">
+                  {firebaseError}
+                </div>
+              )}
+              
+              {/* Pro Status Trigger */}
+              {isPremium ? (
+                <button 
+                  onClick={() => setShowPricingModal(true)}
+                  className="hidden md:flex items-center gap-1 bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-bold text-xs px-3 py-1.5 rounded-full"
+                >
+                  <Sparkles className="w-3 h-3 text-indigo-400 animate-pulse" />
+                  <span>Pro Member</span>
+                </button>
+              ) : (
+                <button 
+                  onClick={() => { setIsLockedWall(false); setShowPricingModal(true); }}
+                  className="hidden md:flex items-center gap-1 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-black text-xs px-3 py-1.5 rounded-full shadow-lg shadow-orange-600/10 transition-all scale-100 hover:scale-105"
+                >
+                  <Zap className="w-3 h-3" />
+                  <span>Go Premium ({3 - dailySessionsUsed}/3 Free)</span>
+                </button>
+              )}
+
+              {/* Developer Test Tools Trigger */}
+              <button 
+                onClick={() => setShowDiagnostics(true)}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors text-slate-400"
+                title="Test Terminal Studio"
+              >
+                <Code className="w-5 h-5" />
+              </button>
+
+              <button onClick={() => setView('history')} className="p-2 hover:bg-white/10 rounded-full transition-colors text-slate-400" title="Session history">
                 <History className="w-5 h-5" />
               </button>
+              
               <div className="flex items-center gap-2 pl-2 border-l border-white/10">
                 <img src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`} className="w-8 h-8 rounded-full border border-white/20" alt="Avatar" />
                 <button onClick={() => signOut()} className="p-2 hover:bg-white/10 rounded-full text-slate-400">
@@ -240,7 +366,7 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <button onClick={signIn} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full font-bold text-sm transition-all shadow-lg shadow-indigo-500/20">
+            <button onClick={handleSignIn} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full font-bold text-sm transition-all shadow-lg shadow-indigo-500/20">
               Sign In
             </button>
           )}
@@ -282,7 +408,7 @@ export default function App() {
               </div>
 
               <button 
-                onClick={() => user ? setView('scenarios') : signIn()}
+                onClick={() => user ? setView('scenarios') : handleSignIn()}
                 className="group relative px-8 py-4 bg-indigo-600 hover:bg-indigo-500 rounded-full font-bold text-lg flex items-center gap-3 transition-all shadow-xl shadow-indigo-600/20"
               >
                 <span>Start Practicing</span>
@@ -299,9 +425,109 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="py-8"
             >
-              <div className="mb-12">
-                <h2 className="text-3xl font-bold mb-2">Choose a Scenario</h2>
-                <p className="text-slate-500">Select a mode to start practicing your speaking skills.</p>
+              <div className="mb-12 flex flex-col md:flex-row justify-between items-start md:items-end gap-3">
+                <div>
+                  <h2 className="text-3xl font-bold mb-2">Choose a Scenario</h2>
+                  <p className="text-slate-400 text-sm">Select a mode to start practicing your speaking skills.</p>
+                </div>
+                {!isPremium && (
+                  <button 
+                    onClick={() => { setIsLockedWall(false); setShowPricingModal(true); }}
+                    className="text-xs bg-amber-500/10 border border-amber-500/30 text-amber-300 font-bold px-4 py-2 rounded-xl flex items-center gap-1.5 hover:bg-amber-500/15 transition-all"
+                  >
+                    <Zap className="w-3.5 h-3.5 fill-current text-amber-400" /> Unlock Premium Customizer
+                  </button>
+                )}
+              </div>
+
+              {/* Premium Speaking Coach customizer Panel */}
+              <div className="mb-10 p-6 glass-panel rounded-[2rem] border border-white/10 relative overflow-hidden">
+                <div className="absolute inset-0 bg-indigo-500/5 blur-3xl scale-125 pointer-events-none" />
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative">
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <Sparkles className="w-4 h-4 text-indigo-400" />
+                      <h3 className="text-lg font-bold tracking-tight">Speaking Coach Configurator</h3>
+                      {isPremium ? (
+                        <span className="text-[10px] bg-indigo-500/20 text-indigo-400 font-extrabold px-3 py-0.5 rounded-full uppercase tracking-widest border border-indigo-500/30">Pro Activated</span>
+                      ) : (
+                        <span className="text-[10px] bg-slate-800/60 text-slate-400 font-bold px-2 py-0.5 rounded-full uppercase tracking-widest">Free Mode Limited</span>
+                      )}
+                    </div>
+                    <p className="text-slate-400 text-xs leading-relaxed max-w-xl">
+                      Configure your AI Coach's vocal accents, speaking speed pace, and response behaviors below. Perfect to train ears for different English dialects.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+                  {/* Accent Dialect choice */}
+                  <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
+                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
+                      <Volume2 className="w-3.5 h-3.5 text-indigo-400" /> Coach Accent Dialect
+                    </label>
+                    <select 
+                      disabled={!isPremium}
+                      value={selectedVoice}
+                      onChange={e => setSelectedVoice(e.target.value)}
+                      className={`w-full bg-slate-950 text-slate-200 text-xs px-2.5 py-2.5 rounded-lg border border-white/10 ${!isPremium ? 'opacity-50 cursor-not-allowed bg-slate-900' : ''}`}
+                    >
+                      <option value="">Default AI Accent</option>
+                      {systemVoices.map(v => (
+                        <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
+                      ))}
+                    </select>
+                    {!isPremium && <span className="text-[9px] text-slate-600 font-bold mt-1">Requires SpeakFlow Premium</span>}
+                  </div>
+
+                  {/* Pace multiplier speed select */}
+                  <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
+                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
+                      <Zap className="w-3.5 h-3.5 text-amber-400" /> Speaking Speed Rate
+                    </label>
+                    <div className="flex gap-2">
+                      {[0.8, 1.0, 1.25].map(speed => (
+                        <button
+                          key={speed}
+                          disabled={!isPremium}
+                          onClick={() => setCoachSpeed(speed)}
+                          className={`flex-grow py-2.5 text-xs font-bold rounded-lg border transition-all ${
+                            coachSpeed === speed 
+                              ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
+                              : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
+                          } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                        >
+                          {speed === 0.8 ? 'Slow (0.8x)' : speed === 1.0 ? 'Normal (1x)' : 'Fast (1.25x)'}
+                        </button>
+                      ))}
+                    </div>
+                    {!isPremium && <span className="text-[9px] text-slate-600 font-bold mt-1">Requires SpeakFlow Premium</span>}
+                  </div>
+
+                  {/* Coach Tone Style Selection */}
+                  <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
+                    <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
+                      <MessageSquare className="w-3.5 h-3.5 text-fuchsia-400" /> Feedback Behavior
+                    </label>
+                    <div className="flex gap-2">
+                      {(['encouraging', 'strict', 'casual'] as const).map(style => (
+                        <button
+                          key={style}
+                          disabled={!isPremium}
+                          onClick={() => setCoachTone(style)}
+                          className={`flex-grow py-2.5 text-[10px] font-bold uppercase tracking-wider rounded-lg border transition-all ${
+                            coachTone === style 
+                              ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
+                              : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
+                          } ${!isPremium ? 'opacity-40 cursor-not-allowed' : ''}`}
+                        >
+                          {style}
+                        </button>
+                      ))}
+                    </div>
+                    {!isPremium && <span className="text-[9px] text-slate-600 font-bold mt-1">Requires SpeakFlow Premium</span>}
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -505,12 +731,70 @@ export default function App() {
                      </div>
                    </div>
 
-                   <button 
-                     onClick={() => setView('scenarios')}
-                     className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-bold transition-all shadow-xl shadow-indigo-600/20"
-                   >
-                     Practice Again
-                   </button>
+                    {/* Better Alternatives & Phrasing Corrections Section */}
+                    {feedback?.betterAlternatives && feedback.betterAlternatives.length > 0 && (
+                      <div className="p-8 glass-panel rounded-[2.5rem] border border-white/10 relative overflow-hidden text-left shadow-xl">
+                        <div className="flex items-center justify-between mb-6">
+                          <div className="flex items-center gap-2">
+                            <Sparkles className="w-5 h-5 text-indigo-400 animate-pulse" />
+                            <h3 className="text-xl font-bold tracking-tight text-white">Smarter Alternatives</h3>
+                          </div>
+                          {!isPremium && (
+                            <span className="text-[9px] bg-amber-500/15 text-amber-300 font-extrabold px-2.5 py-1 rounded-full uppercase tracking-wider border border-amber-500/30">Premium Feature</span>
+                          )}
+                        </div>
+
+                        {/* If not Premium, show blurred container with premium promo overlay */}
+                        <div className="relative">
+                          <div className={`space-y-4 ${!isPremium ? 'filter blur-sm select-none pointer-events-none opacity-30 select-none' : ''}`}>
+                            {feedback.betterAlternatives.map((alt: any, i: number) => (
+                              <div key={i} className="p-5 bg-slate-950/40 rounded-2xl border border-white/5 space-y-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                  <div>
+                                    <span className="text-[9px] uppercase font-black tracking-widest text-red-400">What you said</span>
+                                    <p className="text-xs text-slate-300 italic mt-1 font-mono">"{alt.original}"</p>
+                                  </div>
+                                  <div>
+                                    <span className="text-[9px] uppercase font-black tracking-widest text-emerald-400">Better Phrasing</span>
+                                    <p className="text-xs text-slate-200 font-bold mt-1 font-mono">"{alt.suggested}"</p>
+                                  </div>
+                                </div>
+                                <div className="pt-2 border-t border-white/5">
+                                  <span className="text-[9px] uppercase font-black tracking-widest text-indigo-400">Coach's Explanation</span>
+                                  <p className="text-xs text-slate-400 leading-relaxed mt-1">{alt.reason}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          {!isPremium && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/80 rounded-[1.5rem] border border-white/10">
+                              <div className="w-12 h-12 bg-amber-500/15 text-amber-400 rounded-full flex items-center justify-center mb-4 border border-amber-500/35">
+                                <Zap className="w-6 h-6 animate-bounce" />
+                              </div>
+                              <h4 className="text-lg font-bold text-white mb-2">Unlock Smarter Phrasing Suggests</h4>
+                              <p className="text-slate-400 text-xs max-w-sm mb-4 leading-normal">
+                                SpeakFlow Pro analyzes your grammar, replaces repetitive fillers, and provides advanced synonym options for professional speech.
+                              </p>
+                              <button 
+                                type="button"
+                                onClick={() => { setIsLockedWall(false); setShowPricingModal(true); }}
+                                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs uppercase tracking-widest transition-all scale-100 hover:scale-105 active:scale-95 shadow-lg shadow-indigo-600/20"
+                              >
+                                Upgrade with Premium Card
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    <button 
+                      onClick={() => setView('scenarios')}
+                      className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-bold transition-all shadow-xl shadow-indigo-600/20 font-black tracking-wide uppercase"
+                    >
+                      Practice Another Scenario
+                    </button>
                 </div>
               )}
             </motion.div>
@@ -518,33 +802,205 @@ export default function App() {
 
           {view === 'history' && (
             <div className="max-w-2xl mx-auto py-8">
-               <h2 className="text-3xl font-bold mb-8">Session History</h2>
-               <HistoryList userId={user?.uid} />
+               <div className="flex justify-between items-center mb-6">
+                 <div>
+                   <h2 className="text-3xl font-bold">Session History</h2>
+                   <p className="text-slate-450 text-xs text-slate-400 mt-1">Review your past evaluations and growth trajectory.</p>
+                 </div>
+                 {!isPremium && (
+                   <button 
+                     onClick={() => { setIsLockedWall(false); setShowPricingModal(true); }}
+                     className="text-[11px] bg-gradient-to-r from-amber-500 to-orange-600 text-white font-extrabold px-3 py-1.5 rounded-full flex items-center gap-1 shadow-lg shadow-orange-600/10"
+                   >
+                     <Zap className="w-3 h-3" /> Get Unlimited Reports
+                   </button>
+                 )}
+               </div>
+               <HistoryList userId={user?.uid} onSelectPastSession={setSelectedPastSession} />
             </div>
           )}
 
         </AnimatePresence>
       </main>
+
+      {/* 2. Interactive Premium Subscription Portal */}
+      {showPricingModal && user && (
+        <PricingModal 
+          uid={user.uid} 
+          isLockedWall={isLockedWall}
+          onClose={() => setShowPricingModal(false)} 
+          onUpgradeSuccess={async () => {
+            const userRef = doc(db, 'users', user.uid);
+            await updateDoc(userRef, {
+              isPremium: true,
+              lastActive: serverTimestamp()
+            });
+            setIsPremium(true);
+          }} 
+        />
+      )}
+
+      {/* 3. Realtime Diagnostic Hub Tools */}
+      {showDiagnostics && (
+        <TestStudio 
+          onClose={() => setShowDiagnostics(false)} 
+          user={user}
+          isPremium={isPremium}
+          togglePremium={() => setIsPremium(!isPremium)}
+          forceView={(targetView, scenario) => {
+            setView(targetView);
+            if (scenario) setSelectedScenario(scenario);
+            setShowDiagnostics(false);
+          }}
+        />
+      )}
+
+      {/* 4. Historical detailed review modal */}
+      {selectedPastSession && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-3xl bg-slate-900 border border-slate-800 rounded-[2.5rem] shadow-2xl p-8 md:p-10 text-slate-200 relative"
+          >
+            <button 
+              onClick={() => setSelectedPastSession(null)} 
+              className="absolute top-6 right-6 p-2 hover:bg-white/5 rounded-full text-slate-400 transition-colors"
+            >
+              <X className="w-6 h-6" />
+            </button>
+
+            <div className="flex items-center gap-2 text-indigo-400 text-xs font-black uppercase tracking-[0.25em] mb-3">
+              <Calendar className="w-4 h-4" />
+              <span>Report Details</span>
+            </div>
+
+            <h3 className="text-2xl font-black text-white tracking-tight mb-6">
+              {SCENARIOS.find(sc => sc.id === selectedPastSession.scenario)?.title || 'Vocal Practice Session'}
+            </h3>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+              <div className="p-4 bg-slate-950/45 rounded-2xl border border-white/5 text-center">
+                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Overall</span>
+                <span className="text-3xl font-black text-indigo-400 tracking-tighter">{selectedPastSession.overallScore || 0}%</span>
+              </div>
+              {Object.entries(selectedPastSession.scores || {}).map(([category, rating]: any) => (
+                <div key={category} className="p-4 bg-slate-950/45 rounded-2xl border border-white/5 text-center">
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">{category}</span>
+                  <span className="text-xl font-bold text-slate-200 tracking-tight">{rating}%</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Strengths & Weaknesses block */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+              <div className="p-6 bg-slate-950/30 rounded-2xl border border-white/5">
+                <h4 className="font-bold text-xs uppercase tracking-widest text-indigo-400 mb-4 flex items-center gap-2">
+                  <Check className="w-4 h-4 text-indigo-400" /> Key Strengths
+                </h4>
+                <ul className="space-y-2 text-xs text-slate-300 leading-relaxed">
+                  {selectedPastSession.feedback?.strengths?.map((str: string, index: number) => (
+                    <li key={index} className="flex gap-2">
+                      <span className="text-indigo-500 font-extrabold">•</span>
+                      <span>{str}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="p-6 bg-slate-950/30 rounded-2xl border border-white/5">
+                <h4 className="font-bold text-xs uppercase tracking-widest text-fuchsia-400 mb-4 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-fuchsia-400" /> Focus Areas
+                </h4>
+                <ul className="space-y-2 text-xs text-slate-300 leading-relaxed">
+                  {selectedPastSession.feedback?.weaknesses?.map((wk: string, index: number) => (
+                    <li key={index} className="flex gap-2">
+                      <span className="text-fuchsia-500 font-extrabold">•</span>
+                      <span>{wk}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            {/* Better phrasing corrections with Premium locks inside reports! */}
+            <div className="p-6 bg-slate-955 rounded-2xl border border-white/5 relative overflow-hidden">
+              <h4 className="font-bold text-xs uppercase tracking-widest text-indigo-400 mb-4 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-400" /> Advanced Grammar Corrections
+              </h4>
+
+              <div className="relative">
+                <div className={`space-y-3 ${!isPremium ? 'filter blur-xs select-none pointer-events-none opacity-30 h-16 overflow-hidden' : ''}`}>
+                  {selectedPastSession.feedback?.betterAlternatives?.map((alt: any, index: number) => (
+                    <div key={index} className="text-xs p-3 bg-slate-950/20 rounded-xl border border-white/5 flex flex-col md:flex-row justify-between gap-2">
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-widest text-red-400 block">Original</span>
+                        <p className="text-slate-300 italic mt-0.5">"{alt.original}"</p>
+                      </div>
+                      <div className="md:text-right">
+                        <span className="text-[9px] uppercase font-black tracking-widest text-emerald-400 block">Suggested</span>
+                        <p className="font-bold text-slate-200 mt-0.5">"{alt.suggested}"</p>
+                      </div>
+                    </div>
+                  ))}
+                  {(!selectedPastSession.feedback?.betterAlternatives || selectedPastSession.feedback.betterAlternatives.length === 0) && (
+                    <p className="text-xs text-slate-500">No major linguistic recommendations necessary for this session.</p>
+                  )}
+                </div>
+
+                {!isPremium && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900/40 rounded-xl">
+                    <button 
+                      onClick={() => { setSelectedPastSession(null); setShowPricingModal(true); }}
+                      className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-fuchsia-600 text-white rounded-xl text-[10px] uppercase font-black tracking-widest scale-100 hover:scale-105 transition-all shadow-md shadow-indigo-600/10"
+                    >
+                      🛡️ Upgrade Pro to Reveal Past corrections
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </motion.div>
+        </div>
+      )}
+
     </div>
   );
 }
 
-function HistoryList({ userId }: { userId: string | undefined }) {
+function HistoryList({ userId, onSelectPastSession }: { userId: string | undefined, onSelectPastSession: (session: any) => void }) {
   const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!userId) return;
     const fetchSessions = async () => {
-      const q = query(
-        collection(db, 'sessions'),
-        where('userId', '==', userId),
-        orderBy('createdAt', 'desc'),
-        limit(10)
-      );
-      const snap = await getDocs(q);
-      setSessions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
+      const path = 'sessions';
+      try {
+        const q = query(
+          collection(db, path),
+          where('userId', '==', userId),
+          limit(20)
+        );
+        const snap = await getDocs(q);
+        const fetchedSessions = snap.docs.map(d => ({ 
+          id: d.id, 
+          ...d.data(),
+          createdAt: (d.data().createdAt as any)?.toDate ? (d.data().createdAt as Timestamp).toDate() : new Date()
+        }));
+        
+        fetchedSessions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        
+        setSessions(fetchedSessions.map(s => ({
+          ...s,
+          createdAt: s.createdAt.toISOString()
+        })));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, path);
+      } finally {
+        setLoading(false);
+      }
     };
     fetchSessions();
   }, [userId]);
@@ -558,7 +1014,11 @@ function HistoryList({ userId }: { userId: string | undefined }) {
   return (
     <div className="space-y-4">
       {sessions.map((s) => (
-        <div key={s.id} className="p-6 glass-card rounded-3xl flex items-center justify-between">
+        <div 
+          key={s.id} 
+          onClick={() => onSelectPastSession(s)}
+          className="p-6 glass-card rounded-3xl flex items-center justify-between cursor-pointer hover:bg-white/5 active:scale-98 transition-all border border-transparent hover:border-white/5"
+        >
           <div>
             <h4 className="font-bold text-lg tracking-tight">
               {SCENARIOS.find(sc => sc.id === s.scenario)?.title || 'Practice'}
@@ -578,7 +1038,7 @@ function HistoryList({ userId }: { userId: string | undefined }) {
       {sessions.length === 0 && (
         <div className="text-center py-12 glass-panel rounded-3xl">
           <History className="w-12 h-12 text-slate-700 mx-auto mb-4" />
-          <p className="text-slate-500 font-medium">No sessions recorded yet.</p>
+          <p className="text-slate-500 font-medium font-bold">No sessions recorded yet.</p>
         </div>
       )}
     </div>
