@@ -413,20 +413,77 @@ export default function App() {
     } catch (err: any) {
       console.error(err);
       const msg = err?.message || String(err);
-      const isMissingKey = msg.includes("missing") || msg.includes("GEMINI_API_KEY") || msg.includes("API key") || msg.includes("api_key");
+      const lowerMsg = msg.toLowerCase();
+      const isMissingKey = lowerMsg.includes("missing") || lowerMsg.includes("gemini_api_key") || lowerMsg.includes("api key") || lowerMsg.includes("api_key");
+      const isQuotaError = lowerMsg.includes("429") || lowerMsg.includes("quota") || lowerMsg.includes("limit") || lowerMsg.includes("exceeded") || lowerMsg.includes("exhausted");
       
       if (isMissingKey) {
         setApiError(msg);
+        setTimeout(() => startListening(), 2500);
+      } else if (isQuotaError) {
+        // Local fallback backup coach responses so practicing never gets blocked on free tier
+        const localFallbacks: Record<string, string[]> = {
+          "job interview pitch": [
+            "Good point! Can you expand on how you would apply your previous skills to solve tough challenges?",
+            "I hear you. In an interview, how do you handle strict deadlines under high pressure?",
+            "Fascinating perspective! What do you consider your greatest professional strength?"
+          ],
+          "casual cafe talk": [
+            "That sounds like a relaxing plan! Are you having coffee or tea today?",
+            "Nice! I agree completely. What are your favorite spots around town?",
+            "Cool! Tell me more about what hobbies you usually do on a free afternoon."
+          ],
+          "ted speaker style": [
+            "Inspiring narrative. How would you frame that main core idea to capture a large audience?",
+            "Powerful message. What is the one key takeaway you want your listeners to remember forever?",
+            "Wonderful progression. How do you plan to conclude your opening act?"
+          ]
+        };
+
+        const key = (selectedScenario?.title || "").toLowerCase();
+        let fallbackPhrase = "Connection limit reached, but let's keep going! Tell me more about your thoughts.";
+        if (key.includes("interview") || key.includes("pitch")) {
+          const arr = localFallbacks["job interview pitch"];
+          fallbackPhrase = arr[Math.floor(Math.random() * arr.length)];
+        } else if (key.includes("cafe") || key.includes("casual") || key.includes("talk")) {
+          const arr = localFallbacks["casual cafe talk"];
+          fallbackPhrase = arr[Math.floor(Math.random() * arr.length)];
+        } else if (key.includes("ted") || key.includes("speaker") || key.includes("presentation")) {
+          const arr = localFallbacks["ted speaker style"];
+          fallbackPhrase = arr[Math.floor(Math.random() * arr.length)];
+        } else {
+          const genericArr = [
+            "That makes complete sense! What other aspects would you like to explore next?",
+            "Well of course! How would you summarize that idea in one quick sentence?",
+            "I'm following you. Let's delve deeper into this topic. Tell me more!"
+          ];
+          fallbackPhrase = genericArr[Math.floor(Math.random() * genericArr.length)];
+        }
+
+        // Set apiError briefly to let them know it's fallback mode, then clear it 
+        setApiError("Free API limit hit. Switched to offline backup coach!");
+        setTimeout(() => setApiError(null), 4000);
+
+        setSessionTranscript(prev => [...prev, { role: 'ai', content: fallbackPhrase }]);
+        setIsAiSpeaking(true);
+        const vc = getSpeakVoiceConfig();
+        speak(fallbackPhrase, () => {
+          setIsAiSpeaking(false);
+          startListening();
+        }, isPremium ? vc.voiceName : undefined, isPremium ? vc.speed : undefined, isPremium ? vc.pitch : undefined);
       } else if (msg.includes("504")) {
         setApiError("Request Timed Out (504) on Vercel. Try speaking again.");
+        setTimeout(() => startListening(), 2500);
       } else if (msg.includes("500") || msg.includes("status 500")) {
         setApiError("Server Error (500). Please check Vercel dashboard and verify GEMINI_API_KEY.");
+        setTimeout(() => startListening(), 2500);
       } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
         setApiError("Could not reach server. Please check internet connection or retry.");
+        setTimeout(() => startListening(), 2500);
       } else {
         setApiError(`Connection trouble: ${msg}`);
+        setTimeout(() => startListening(), 2500);
       }
-      setTimeout(() => startListening(), 2500);
     } finally {
       setIsAiProcessing(false);
     }
