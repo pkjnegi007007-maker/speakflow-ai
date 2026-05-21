@@ -412,9 +412,21 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
-      const isMissingKey = err?.message && (err.message.includes("missing") || err.message.includes("GEMINI_API_KEY") || err.message.includes("API key"));
-      setApiError(isMissingKey ? err.message : "Connection trouble. Let's try again.");
-      setTimeout(() => startListening(), 2000);
+      const msg = err?.message || String(err);
+      const isMissingKey = msg.includes("missing") || msg.includes("GEMINI_API_KEY") || msg.includes("API key") || msg.includes("api_key");
+      
+      if (isMissingKey) {
+        setApiError(msg);
+      } else if (msg.includes("504")) {
+        setApiError("Request Timed Out (504) on Vercel. Try speaking again.");
+      } else if (msg.includes("500") || msg.includes("status 500")) {
+        setApiError("Server Error (500). Please check Vercel dashboard and verify GEMINI_API_KEY.");
+      } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+        setApiError("Could not reach server. Please check internet connection or retry.");
+      } else {
+        setApiError(`Connection trouble: ${msg}`);
+      }
+      setTimeout(() => startListening(), 2500);
     } finally {
       setIsAiProcessing(false);
     }
