@@ -11,6 +11,7 @@ export function useVoice() {
   const activeQueueRef = useRef<string[]>([]);
   const onEndCallbackRef = useRef<(() => void) | undefined>(undefined);
   const speechIntervalRef = useRef<any>(null);
+  const lastInterimUpdateRef = useRef<number>(0);
 
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -40,8 +41,14 @@ export function useVoice() {
 
         if (final) {
           setTranscript(prev => (prev + ' ' + final).trim());
+          setInterimTranscript('');
+        } else {
+          const now = Date.now();
+          if (now - lastInterimUpdateRef.current > 100) {
+            setInterimTranscript(interim);
+            lastInterimUpdateRef.current = now;
+          }
         }
-        setInterimTranscript(interim);
       };
 
       recognition.onerror = (event: any) => {

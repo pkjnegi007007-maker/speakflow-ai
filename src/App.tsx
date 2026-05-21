@@ -324,8 +324,8 @@ export default function App() {
   useEffect(() => {
     if (transcript || interimTranscript) {
       lastActivityRef.current = Date.now();
-      // Clear transient api errors as soon as user speaks or voice makes sound
-      setApiError(null);
+      // Clear transient api errors as soon as user speaks or voice makes sound - guard to prevent dispatch cycles
+      setApiError(prev => prev !== null ? null : null);
     }
   }, [transcript, interimTranscript]);
 

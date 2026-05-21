@@ -41,7 +41,7 @@ function getAiGen() {
   return cachedAiGen;
 }
 
-async function retryGenerateContent(aiGenInstance: GoogleGenAI, params: any, maxAttempts = 3): Promise<any> {
+async function retryGenerateContent(aiGenInstance: GoogleGenAI, params: any, maxAttempts = 2): Promise<any> {
   let attempt = 0;
   while (attempt < maxAttempts) {
     try {
@@ -52,7 +52,8 @@ async function retryGenerateContent(aiGenInstance: GoogleGenAI, params: any, max
       if (attempt >= maxAttempts) {
         throw err;
       }
-      await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+      // Fail fast under serverless limits, do not sleep over 200ms
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
   }
 }

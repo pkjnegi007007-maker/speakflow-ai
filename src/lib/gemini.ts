@@ -12,6 +12,28 @@ export const models = {
   pro: "gemini-3.1-pro-preview",
 };
 
+// Safety wrapper to abort request before serverless limits or infinite freezes occur
+async function fetchWithTimeout(resource: string, options: RequestInit & { timeout?: number }) {
+  const { timeout = 7500 } = options;
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(resource, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (err: any) {
+    clearTimeout(id);
+    if (err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeout}ms`);
+    }
+    throw err;
+  }
+}
+
 export function sanitizeChatHistory(messages: { role: string; content: string }[]) {
   if (!Array.isArray(messages) || messages.length === 0) {
     return [];
@@ -47,15 +69,16 @@ export async function getChatResponse(scenario: string, messages: { role: string
   const sanitizedMessages = sanitizeChatHistory(messages);
 
   let attempts = 0;
-  const maxAttempts = 3;
+  const maxAttempts = 2; // Reduced to fail-fast and allow client fallback/retry feedback rather than 30s freeze
   let lastError: any = null;
 
   while (attempts < maxAttempts) {
     try {
-      const res = await fetch("/api/gemini/chat", {
+      const res = await fetchWithTimeout("/api/gemini/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scenario, messages: sanitizedMessages })
+        body: JSON.stringify({ scenario, messages: sanitizedMessages }),
+        timeout: 7000 // Cut-off at 7 seconds to prevent hitting Vercel's 10-second serverless gateway limit
       });
       
       if (res.ok) {
@@ -80,7 +103,7 @@ export async function getChatResponse(scenario: string, messages: { role: string
       attempts++;
       console.warn(`Chat proxy attempt ${attempts} failed:`, err);
       if (attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, attempts * 1000));
+        await new Promise(resolve => setTimeout(resolve, attempts * 500));
       }
     }
   }
@@ -122,15 +145,16 @@ export async function getChatResponse(scenario: string, messages: { role: string
 
 export async function analyzeSession(transcript: string) {
   let attempts = 0;
-  const maxAttempts = 3;
+  const maxAttempts = 2; // Reduced to reduce Vercel timeout risk on 10s Hobby limit
   let lastError: any = null;
 
   while (attempts < maxAttempts) {
     try {
-      const res = await fetch("/api/gemini/analyze", {
+      const res = await fetchWithTimeout("/api/gemini/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript })
+        body: JSON.stringify({ transcript }),
+        timeout: 15000 // Give more time (15s) for full-length review/analysis report
       });
       
       if (res.ok) {
@@ -155,7 +179,7 @@ export async function analyzeSession(transcript: string) {
       attempts++;
       console.warn(`Analysis proxy attempt ${attempts} failed:`, err);
       if (attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, attempts * 1000));
+        await new Promise(resolve => setTimeout(resolve, attempts * 500));
       }
     }
   }
