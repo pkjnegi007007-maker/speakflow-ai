@@ -46,39 +46,48 @@ export function sanitizeChatHistory(messages: { role: string; content: string }[
 export async function getChatResponse(scenario: string, messages: { role: string; content: string }[]) {
   const sanitizedMessages = sanitizeChatHistory(messages);
 
-  // 1. Try server-side proxy route first
-  try {
-    const res = await fetch("/api/gemini/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario, messages: sanitizedMessages })
-    });
-    
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && data.text) {
-        return data.text;
+  let attempts = 0;
+  const maxAttempts = 3;
+  let lastError: any = null;
+
+  while (attempts < maxAttempts) {
+    try {
+      const res = await fetch("/api/gemini/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario, messages: sanitizedMessages })
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.text) {
+          return data.text;
+        }
+        if (data.error) {
+          throw new Error(data.error);
+        }
       }
-      if (data.error) {
-        throw new Error(data.error);
+      
+      // If we get a 404 (static deployment with no backend), skip directly to client fallback
+      if (res.status === 404) {
+        break;
       }
-    }
-    // If we get a 404 (static deployment with no backend), proceed to client fallback
-    if (res.status !== 404) {
+      
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || `Proxy returned server status ${res.status}`);
-    }
-  } catch (err: any) {
-    // Only log and proceed to direct client fallback if it looks like a 404 or connection error to backend (i.e. static SPA build)
-    console.warn("Express proxy unavailable, trying browser-direct GenAI fallback...", err);
-    if (err.message && (err.message.includes("missing") || err.message.includes("GEMINI_API_KEY"))) {
-      throw err;
+    } catch (err: any) {
+      lastError = err;
+      attempts++;
+      console.warn(`Chat proxy attempt ${attempts} failed:`, err);
+      if (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, attempts * 1000));
+      }
     }
   }
 
   // 2. Client-side fallback (if running as static Vercel app with keys configured via build variables)
   if (!apiKey) {
-    throw new Error(
+    throw lastError || new Error(
       "Gemini API key is missing. For production, please declare GEMINI_API_KEY in your hosting (e.g., Vercel Environment Variables) or use the SpeakFlow AI Studio playground."
     );
   }
@@ -112,37 +121,48 @@ export async function getChatResponse(scenario: string, messages: { role: string
 }
 
 export async function analyzeSession(transcript: string) {
-  // 1. Try server-side proxy route first
-  try {
-    const res = await fetch("/api/gemini/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transcript })
-    });
-    
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && data.text) {
-        return JSON.parse(data.text || "{}");
+  let attempts = 0;
+  const maxAttempts = 3;
+  let lastError: any = null;
+
+  while (attempts < maxAttempts) {
+    try {
+      const res = await fetch("/api/gemini/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript })
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.text) {
+          return JSON.parse(data.text || "{}");
+        }
+        if (data.error) {
+          throw new Error(data.error);
+        }
       }
-      if (data.error) {
-        throw new Error(data.error);
+      
+      // If we get a 404 (static deployment with no backend), skip directly to client fallback
+      if (res.status === 404) {
+        break;
       }
-    }
-    if (res.status !== 404) {
+      
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || `Proxy returned server status ${res.status}`);
-    }
-  } catch (err: any) {
-    console.warn("Express proxy unavailable, trying browser-direct GenAI fallback...", err);
-    if (err.message && (err.message.includes("missing") || err.message.includes("GEMINI_API_KEY"))) {
-      throw err;
+    } catch (err: any) {
+      lastError = err;
+      attempts++;
+      console.warn(`Analysis proxy attempt ${attempts} failed:`, err);
+      if (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, attempts * 1000));
+      }
     }
   }
 
   // 2. Client-side fallback
   if (!apiKey) {
-    throw new Error(
+    throw lastError || new Error(
       "Gemini API key is missing. For production, please declare GEMINI_API_KEY in your hosting (e.g., Vercel Environment Variables) or use the SpeakFlow AI Studio playground."
     );
   }

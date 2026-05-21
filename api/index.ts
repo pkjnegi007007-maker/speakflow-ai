@@ -35,6 +35,22 @@ function getAiGen() {
   return cachedAiGen;
 }
 
+async function retryGenerateContent(aiGenInstance: GoogleGenAI, params: any, maxAttempts = 3): Promise<any> {
+  let attempt = 0;
+  while (attempt < maxAttempts) {
+    try {
+      return await aiGenInstance.models.generateContent(params);
+    } catch (err: any) {
+      attempt++;
+      console.warn(`[GEMINI RETRY] Attempt ${attempt} failed with: ${err.message || err}`);
+      if (attempt >= maxAttempts) {
+        throw err;
+      }
+      await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+    }
+  }
+}
+
 const app = express();
 app.use(express.json());
 
@@ -95,7 +111,7 @@ app.post("/api/gemini/chat", async (req, res) => {
 
     const modelName = "gemini-3.5-flash";
 
-    const r = await getAiGen().models.generateContent({
+    const r = await retryGenerateContent(getAiGen(), {
       model: modelName,
       contents,
       config: {
@@ -131,7 +147,7 @@ app.post("/api/gemini/analyze", async (req, res) => {
   try {
     const modelName = "gemini-3.5-flash";
 
-    const r = await getAiGen().models.generateContent({
+    const r = await retryGenerateContent(getAiGen(), {
       model: modelName,
       contents: [{ parts: [{ text: `Analyze the following communication practice session transcript and provide detailed feedback in JSON format:\n\n${transcript}` }] }],
       config: {

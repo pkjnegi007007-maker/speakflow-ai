@@ -324,6 +324,8 @@ export default function App() {
   useEffect(() => {
     if (transcript || interimTranscript) {
       lastActivityRef.current = Date.now();
+      // Clear transient api errors as soon as user speaks or voice makes sound
+      setApiError(null);
     }
   }, [transcript, interimTranscript]);
 
@@ -368,9 +370,20 @@ export default function App() {
         !isAiProcessingRef.current
       ) {
         handleUserSpeechFinished(currentTranscript.trim());
+      } else if (
+        !isPausedRef.current &&
+        !currentTranscript.trim() &&
+        viewRef.current === 'session' &&
+        !isAiProcessingRef.current &&
+        !isAiSpeakingRef.current
+      ) {
+        // Speech recognition stopped without transcript (e.g. natural continuous limit or pause cycle)
+        // Auto-restart to keep microphone alive!
+        console.log("Speech recognition stopped naturally; auto-restarting to keep microphone alive.");
+        startListening();
       }
     }
-  }, [isListening]);
+  }, [isListening, startListening]);
 
   const handleUserSpeechFinished = async (content: string) => {
     if (isAiProcessing) return;

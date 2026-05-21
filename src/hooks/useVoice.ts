@@ -8,6 +8,9 @@ export function useVoice() {
   
   const recognitionRef = useRef<any>(null);
   const synthesisRef = useRef<SpeechSynthesis | null>(null);
+  const activeQueueRef = useRef<string[]>([]);
+  const onEndCallbackRef = useRef<(() => void) | undefined>(undefined);
+  const speechIntervalRef = useRef<any>(null);
 
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -75,6 +78,9 @@ export function useVoice() {
       if (synthesisRef.current) {
         synthesisRef.current.cancel();
       }
+      if (speechIntervalRef.current) {
+        clearInterval(speechIntervalRef.current);
+      }
     };
   }, []);
 
@@ -100,32 +106,107 @@ export function useVoice() {
     }
   }, []);
 
-  const speak = useCallback((text: string, onEnd?: () => void, voiceName?: string, rate?: number, pitch?: number) => {
-    if (synthesisRef.current) {
-      synthesisRef.current.cancel(); 
-      const utterance = new SpeechSynthesisUtterance(text);
-      if (voiceName) {
-        const voices = synthesisRef.current.getVoices();
-        const found = voices.find(v => v.name === voiceName);
-        if (found) utterance.voice = found;
+  const playNextChunk = useCallback((voiceName?: string, rate?: number, pitch?: number) => {
+    if (!synthesisRef.current) return;
+
+    if (activeQueueRef.current.length === 0) {
+      if (speechIntervalRef.current) {
+        clearInterval(speechIntervalRef.current);
+        speechIntervalRef.current = null;
       }
-      if (rate !== undefined) {
-        utterance.rate = rate;
+      if (onEndCallbackRef.current) {
+        const cb = onEndCallbackRef.current;
+        onEndCallbackRef.current = undefined;
+        cb();
       }
-      if (pitch !== undefined) {
-        utterance.pitch = pitch;
-      }
-      utterance.onend = () => {
-        if (onEnd) onEnd();
-      };
-      utterance.onerror = () => {
-        if (onEnd) onEnd();
-      };
-      synthesisRef.current.speak(utterance);
+      return;
     }
+
+    const chunk = activeQueueRef.current.shift()?.trim();
+    if (!chunk) {
+      playNextChunk(voiceName, rate, pitch);
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(chunk);
+    if (voiceName) {
+      const voices = synthesisRef.current.getVoices();
+      const found = voices.find(v => v.name === voiceName);
+      if (found) utterance.voice = found;
+    }
+    if (rate !== undefined) utterance.rate = rate;
+    if (pitch !== undefined) utterance.pitch = pitch;
+
+    let chunkCompleted = false;
+    const completeChunk = () => {
+      if (chunkCompleted) return;
+      chunkCompleted = true;
+      playNextChunk(voiceName, rate, pitch);
+    };
+
+    // Calculate a safe estimated timeout per sentence chunk to prevent hanging
+    const estimatedDurationMs = Math.max(3000, (chunk.length / 5) * 1000 * (1 / (rate || 1.0)) + 2000);
+    const safetyTimeout = setTimeout(() => {
+      if (!chunkCompleted) {
+        console.warn('Chunk speech timeout, safety skipping to keep app interactive');
+        if (synthesisRef.current) synthesisRef.current.cancel();
+        completeChunk();
+      }
+    }, estimatedDurationMs);
+
+    const doneHandler = () => {
+      clearTimeout(safetyTimeout);
+      completeChunk();
+    };
+
+    utterance.onend = doneHandler;
+    utterance.onerror = doneHandler;
+
+    synthesisRef.current.speak(utterance);
+    synthesisRef.current.resume(); // wake up speech synthesis (Chrome bug workaround)
   }, []);
 
+  const speak = useCallback((text: string, onEnd?: () => void, voiceName?: string, rate?: number, pitch?: number) => {
+    if (synthesisRef.current) {
+      synthesisRef.current.cancel();
+
+      if (speechIntervalRef.current) {
+        clearInterval(speechIntervalRef.current);
+        speechIntervalRef.current = null;
+      }
+
+      // Hack for Chrome's SpeechSynthesis stopping randomly on long runs
+      speechIntervalRef.current = setInterval(() => {
+        if (synthesisRef.current?.speaking) {
+          synthesisRef.current.resume();
+        }
+      }, 5000);
+
+      onEndCallbackRef.current = onEnd;
+
+      // Extract brief sentences cleanly
+      const chunks = text
+        .split(/[.!?；。？！\n]+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+
+      if (chunks.length === 0) {
+        if (onEnd) onEnd();
+        return;
+      }
+
+      activeQueueRef.current = chunks;
+      playNextChunk(voiceName, rate, pitch);
+    }
+  }, [playNextChunk]);
+
   const cancelSpeech = useCallback(() => {
+    activeQueueRef.current = [];
+    onEndCallbackRef.current = undefined;
+    if (speechIntervalRef.current) {
+      clearInterval(speechIntervalRef.current);
+      speechIntervalRef.current = null;
+    }
     if (synthesisRef.current) {
       synthesisRef.current.cancel();
     }
