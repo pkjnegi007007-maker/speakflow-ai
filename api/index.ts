@@ -1,16 +1,39 @@
 import express from "express";
 import { GoogleGenAI, Type } from "@google/genai";
 
-// Initialize Gemini on the server side
-const geminiApiKey = process.env.GEMINI_API_KEY;
-const aiGen = new GoogleGenAI({
-  apiKey: geminiApiKey || "",
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
+function cleanApiKey(key: string | undefined): string {
+  if (!key) return "";
+  let cleaned = key.trim();
+  // Strip enclosing quotes if present (both single or double)
+  if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    cleaned = cleaned.slice(1, -1).trim();
   }
-});
+  return cleaned;
+}
+
+let cachedAiGen: GoogleGenAI | null = null;
+let lastUsedKey: string | null = null;
+
+function getAiGen() {
+  const rawKey = process.env.GEMINI_API_KEY;
+  const key = cleanApiKey(rawKey);
+  if (!key) {
+    throw new Error("GEMINI_API_KEY environment variable is missing or empty.");
+  }
+  
+  if (!cachedAiGen || lastUsedKey !== key) {
+    cachedAiGen = new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+    lastUsedKey = key;
+  }
+  return cachedAiGen;
+}
 
 const app = express();
 app.use(express.json());
@@ -72,7 +95,7 @@ app.post("/api/gemini/chat", async (req, res) => {
 
     const modelName = "gemini-3.5-flash";
 
-    const r = await aiGen.models.generateContent({
+    const r = await getAiGen().models.generateContent({
       model: modelName,
       contents,
       config: {
@@ -108,7 +131,7 @@ app.post("/api/gemini/analyze", async (req, res) => {
   try {
     const modelName = "gemini-3.5-flash";
 
-    const r = await aiGen.models.generateContent({
+    const r = await getAiGen().models.generateContent({
       model: modelName,
       contents: [{ parts: [{ text: `Analyze the following communication practice session transcript and provide detailed feedback in JSON format:\n\n${transcript}` }] }],
       config: {

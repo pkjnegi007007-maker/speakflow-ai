@@ -42,6 +42,12 @@ export function useVoice() {
       };
 
       recognition.onerror = (event: any) => {
+        // 'no-speech' is triggered naturally when the user is thinking/silent (no-speech error state)
+        // 'aborted' happens naturally when the recognition is stopped manually
+        if (event.error === 'no-speech' || event.error === 'aborted') {
+          console.debug('Speech recognition pause cycle:', event.error);
+          return;
+        }
         console.error('Speech recognition error:', event.error);
         setError(event.error);
         if (event.error === 'not-allowed') {

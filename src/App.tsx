@@ -141,6 +141,14 @@ export default function App() {
   const [selectedVoice, setSelectedVoice] = useState('');
   const [coachSpeed, setCoachSpeed] = useState(1.0);
   const [coachTone, setCoachTone] = useState<'encouraging' | 'strict' | 'casual'>('encouraging');
+  const [silenceMode, setSilenceMode] = useState<'conversational' | 'thoughtful' | 'presentation'>(() => {
+    try {
+      const saved = localStorage.getItem('speakflow_silence_mode');
+      return (saved as 'conversational' | 'thoughtful' | 'presentation') || 'thoughtful';
+    } catch {
+      return 'thoughtful';
+    }
+  });
   const [systemVoices, setSystemVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   // Custom demographics and regional accents
@@ -184,6 +192,15 @@ export default function App() {
       window.speechSynthesis.onvoiceschanged = loadAllVoices;
     }
   }, []);
+
+  const handleSilenceModeChange = (mode: 'conversational' | 'thoughtful' | 'presentation') => {
+    setSilenceMode(mode);
+    try {
+      localStorage.setItem('speakflow_silence_mode', mode);
+    } catch (err) {
+      console.error("Failed to write silence mode to localStorage", err);
+    }
+  };
 
   const {
     isListening,
@@ -314,7 +331,13 @@ export default function App() {
   useEffect(() => {
     if (view !== 'session') return;
 
-    const silenceDuration = 1100; // 1.1s silence for snappier conversational response
+    let silenceDuration = 3200; // Default to 'thoughtful' (3.2s)
+    if (silenceMode === 'conversational') {
+      silenceDuration = 1500; // 1.5s for faster conversational pacing
+    } else if (silenceMode === 'presentation') {
+      silenceDuration = 6000; // 6.0s for long explanations or presentation scripts
+    }
+
     const checkSilence = setInterval(() => {
       if (
         isListeningRef.current && 
@@ -331,7 +354,7 @@ export default function App() {
     }, 150); // High frequency check (150ms) to ensure low latency turn-taking
 
     return () => clearInterval(checkSilence);
-  }, [view, stopListening]);
+  }, [view, stopListening, silenceMode]);
 
   // Handle User Voice Turn-Taking (Auto-trigger AI response after user finishes)
   // Depends ONLY on isListening changing state, and accesses decoupled refs to prevent high-frequency re-evaluations
@@ -730,7 +753,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mt-6">
                   {/* Column 1: Voice Profile Profile Character */}
                   <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
                     <div>
@@ -890,6 +913,38 @@ export default function App() {
                     </div>
                     {!isPremium && <span className="text-[9px] text-amber-400/80 font-bold mt-2 flex items-center gap-1">🔒 Requires SpeakFlow Pro</span>}
                   </div>
+
+                  {/* Column 5: Turn-Taking Silence/Pause Mode */}
+                  <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between">
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5 align-middle">
+                        <Settings className="w-3.5 h-3.5 text-indigo-400" /> Turn-Taking Pause Mode
+                      </label>
+                      <div className="flex flex-col gap-1.5 mt-1">
+                        {[
+                          { id: 'conversational' as const, label: 'Chatty (1.5s pause)', desc: 'Fast back-and-forth chatter' },
+                          { id: 'thoughtful' as const, label: 'Thoughtful (3.2s pause)', desc: 'Standard breathing/paragraphs' },
+                          { id: 'presentation' as const, label: 'Continuous (6.0s pause)', desc: 'Practicing long explanations' }
+                        ].map(mode => (
+                          <button
+                            key={mode.id}
+                            onClick={() => {
+                              handleSilenceModeChange(mode.id);
+                            }}
+                            className={`w-full p-2 text-left rounded-lg border transition-all cursor-pointer flex flex-col gap-0.5 ${
+                              silenceMode === mode.id 
+                                ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' 
+                                : 'bg-slate-950 text-slate-400 border-white/5 hover:bg-slate-900/40'
+                            }`}
+                          >
+                            <span className="text-[10px] font-bold">{mode.label}</span>
+                            <span className="text-[8px] text-slate-500 font-medium leading-none">{mode.desc}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <span className="text-[9px] text-indigo-400/80 font-bold mt-2 flex items-center gap-1">✨ Prevents paragraph cuts!</span>
+                  </div>
                 </div>
               </div>
 
@@ -974,6 +1029,12 @@ export default function App() {
                       )}
                     </>
                   )}
+                </div>
+
+                {/* Silence tracking mode micro label */}
+                <div className="absolute bottom-6 flex items-center gap-1.5 px-3 py-1 bg-white/5 rounded-full border border-white/5 text-[9px] font-bold text-slate-400 uppercase tracking-widest pointer-events-none">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                  Pacing: {silenceMode === 'conversational' ? 'Chatty (1.5s)' : silenceMode === 'presentation' ? 'Continuous (6s)' : 'Thoughtful (3.2s)'}
                 </div>
               </div>
 
