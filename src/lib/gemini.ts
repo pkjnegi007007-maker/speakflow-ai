@@ -12,13 +12,46 @@ export const models = {
   pro: "gemini-3.1-pro-preview",
 };
 
+export function sanitizeChatHistory(messages: { role: string; content: string }[]) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+
+  // 1. Map to consistent roles ("user" or "model")
+  const mapped = messages.map(m => ({
+    role: m.role === "ai" || m.role === "model" ? "model" as const : "user" as const,
+    content: (m.content || "").trim()
+  })).filter(m => m.content.length > 0);
+
+  // 2. Merge consecutive messages of the exact same role (e.g., user + user combined, model + model combined)
+  const merged: { role: "user" | "model"; content: string }[] = [];
+  for (const msg of mapped) {
+    if (merged.length > 0 && merged[merged.length - 1].role === msg.role) {
+      merged[merged.length - 1].content += " " + msg.content;
+    } else {
+      merged.push({ role: msg.role, content: msg.content });
+    }
+  }
+
+  // 3. Sliding window: Keep at most the last 10 messages (approx 5 conversational turns)
+  // This bounds the context, ensures high performance, and prevents Vercel serverless request timeouts.
+  let sliced = merged.slice(-10);
+  while (sliced.length > 0 && sliced[0].role !== "user") {
+    sliced.shift();
+  }
+
+  return sliced;
+}
+
 export async function getChatResponse(scenario: string, messages: { role: string; content: string }[]) {
+  const sanitizedMessages = sanitizeChatHistory(messages);
+
   // 1. Try server-side proxy route first
   try {
     const res = await fetch("/api/gemini/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario, messages })
+      body: JSON.stringify({ scenario, messages: sanitizedMessages })
     });
     
     if (res.ok) {
@@ -54,8 +87,8 @@ export async function getChatResponse(scenario: string, messages: { role: string
     ai = new GoogleGenAI({ apiKey });
   }
 
-  const contents = messages.map(m => ({
-    role: m.role === "ai" ? "model" : "user",
+  const contents = sanitizedMessages.map(m => ({
+    role: m.role,
     parts: [{ text: m.content }]
   }));
 

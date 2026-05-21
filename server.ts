@@ -24,6 +24,37 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Helper to sanitize chat history for Gemini API
+  function sanitizeChatHistory(messagesToSanitize: any[]): { role: "user" | "model"; content: string }[] {
+    if (!Array.isArray(messagesToSanitize) || messagesToSanitize.length === 0) {
+      return [];
+    }
+
+    // 1. Map to consistent roles ("user" or "model")
+    const mapped = messagesToSanitize.map(m => ({
+      role: m.role === "ai" || m.role === "model" ? "model" as const : "user" as const,
+      content: (m.content || "").trim()
+    })).filter(m => m.content.length > 0);
+
+    // 2. Merge consecutive messages of the exact same role
+    const merged: { role: "user" | "model"; content: string }[] = [];
+    for (const msg of mapped) {
+      if (merged.length > 0 && merged[merged.length - 1].role === msg.role) {
+        merged[merged.length - 1].content += " " + msg.content;
+      } else {
+        merged.push({ role: msg.role, content: msg.content });
+      }
+    }
+
+    // 3. Sliding window: Limit to last 10 messages for speed and timeout safety on serverless platforms
+    let sliced = merged.slice(-10);
+    while (sliced.length > 0 && sliced[0].role !== "user") {
+      sliced.shift();
+    }
+
+    return sliced;
+  }
+
   // API Health Check
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -41,8 +72,10 @@ async function startServer() {
     }
 
     try {
-      const contents = messages.map((m: any) => ({
-        role: m.role === "ai" ? "model" : "user",
+      const sanitizedMessages = sanitizeChatHistory(messages);
+
+      const contents = sanitizedMessages.map((m: any) => ({
+        role: m.role,
         parts: [{ text: m.content }]
       }));
 
